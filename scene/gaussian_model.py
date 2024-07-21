@@ -37,6 +37,13 @@ class GaussianModel:
             cov_11 = actual_covariance[:,:3,:3]
             cov_12 = actual_covariance[:,0:3,3:4]
             cov_t = actual_covariance[:,3:4,3:4]
+
+            '''
+            Note the whle matrix can be represented as:
+            cov11  (3x3)   cov12(3x1)
+            cov12.T(1x3)   cov_t (1)
+            '''
+            
             current_covariance = cov_11 - cov_12 @ cov_12.transpose(1, 2) / cov_t
             symm = strip_symmetric(current_covariance)
             if dt.shape[1] > 1:
