@@ -63,6 +63,7 @@ class Scene:
             for id, cam in enumerate(camlist):
                 json_cams.append(camera_to_JSON(id, cam))
             with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
+                # Writing the json data to the file cameras.json
                 json.dump(json_cams, file)
 
         if shuffle:

@@ -7,6 +7,7 @@ from utils.general_utils import PILtoTorch
 from PIL import Image
 import numpy as np
 
+# Related to depth supervison -- add depth gt pictures
 class CameraDataset(Dataset):
     
     def __init__(self, viewpoint_stack, white_background):

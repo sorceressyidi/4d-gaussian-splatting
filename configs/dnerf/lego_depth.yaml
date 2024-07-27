@@ -1,16 +1,16 @@
 gaussian_dim: 4
-time_duration: [0.0, 10.0]
-num_pts: 300_000
+time_duration: [0.0, 1.0]
+num_pts: 100_000
 num_pts_ratio: 1.0
 rot_4d: True
 force_sh_3d: False
-batch_size: 4
+batch_size: 2
 exhaust_test: True
-start_checkpoint: "output/N3V/cook_spinach/chkpnt_best.pth"
+
 ModelParams:
   sh_degree: 3
-  source_path: "data/N3V/cook_spinach"
-  model_path: "output/N3V/cook_spinach"
+  source_path: "data/dnerf/lego"
+  model_path: "output/dnerf/lego"
   images: "images"
   resolution: 2
   white_background: False
@@ -20,7 +20,7 @@ ModelParams:
   num_extra_pts: 0
   loaded_pth: ""
   frame_ratio: 1
-  dataloader: True
+  dataloader: False
 
 PipelineParams:
   convert_SHs_python: False
@@ -55,5 +55,5 @@ OptimizationParams:
   final_prune_from_iter: -1
   sh_increase_interval: 1000
   lambda_opa_mask: 0.0
-  lambda_rigid: 0.0
+  lambda_rigid: 1.0
   lambda_motion: 0.0

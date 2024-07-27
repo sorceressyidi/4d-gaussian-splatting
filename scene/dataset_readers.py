@@ -54,6 +54,21 @@ class SceneInfo(NamedTuple):
     ply_path: str
 
 def getNerfppNorm(cam_info):
+    '''
+    Normalize camera positions.
+
+    This function computes the normalization parameters (translation and radius)
+    for camera positions to center them at the origin and ensure they fit within
+    a unit sphere scaled by a factor of 1.1.
+
+    Parameters:
+    cam_info (list): A list of camera information, each containing rotation (R) 
+                     and translation (T) matrices.
+
+    Returns:
+    dict: A dictionary with 'translate' (translation vector) and 'radius' 
+          (scaling factor for normalization).
+    '''
     def get_center_and_diag(cam_centers):
         cam_centers = np.hstack(cam_centers)
         avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)
@@ -263,6 +278,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             image = np.empty(0)
             width, height = imagesize.get(image_path)
         
+        # Note here for depth supervision
         if 'depth_path' in frame:
             depth_name = frame["depth_path"]
             if not extension in frame["depth_path"]:
@@ -321,6 +337,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", num_pt
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(path, "points3d.ply")
+    
     if not os.path.exists(ply_path):
         # Since this data set has no colmap data, we start with random points
         print(f"Generating random point cloud ({num_pts})...")

@@ -255,10 +255,15 @@ if __name__ == '__main__':
 
     # inversion of this: https://github.com/Fyusion/LLFF/blob/c6e27b1ee59cb18f054ccb0f87a90214dbe70482/llff/poses/pose_utils.py#L51
     poses = np.concatenate([poses[..., 1:2], poses[..., 0:1], -poses[..., 2:3], poses[..., 3:4]], -1) # (N, 3, 4)
-
+    '''
+    poses_bounds are composed of : 
+    [ r11 r12 r13 t1 H r21 r22 r23 t2 W r31 r32 r33 t3 fl b1 b2 ]
+    '''
     # to homogeneous 
     last_row = np.tile(np.array([0, 0, 0, 1]), (len(poses), 1, 1)) # (N, 1, 4)
     poses = np.concatenate([poses, last_row], axis=1) # (N, 4, 4) 
+
+    # Question: poses are camera2world matrix?
 
     # the following stuff are from colmap2nerf... 
     poses[:, 0:3, 1] *= -1
