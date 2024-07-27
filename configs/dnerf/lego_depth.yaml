@@ -6,11 +6,12 @@ rot_4d: True
 force_sh_3d: False
 batch_size: 2
 exhaust_test: True
+depth_lambda: 0.08
 
 ModelParams:
   sh_degree: 3
-  source_path: "data/dnerf/lego"
-  model_path: "output/dnerf/lego"
+  source_path: "data/dnerf/lego_depth"
+  model_path: "output/dnerf/lego_depth"
   images: "images"
   resolution: 2
   white_background: False

@@ -31,8 +31,26 @@ class CameraDataset(Dataset):
                 viewpoint_image *= torch.ones((1, viewpoint_cam.image_height, viewpoint_cam.image_width))
         else:
             viewpoint_image = viewpoint_cam.image
-            
-        return viewpoint_image, viewpoint_cam
+        if viewpoint_cam.depth is not None:
+            depth_image = viewpoint_cam.depth
+        else:
+            depth_image = None
+
+        '''
+            norm_data = depth_image / 255.0
+            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + self.bg * (1 - norm_data[:, :, 3:4])
+            depth_image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
+            resized_image_rgb = PILtoTorch(depth_image, viewpoint_cam.resolution)
+            depth_image = resized_image_rgb[:3, ...].clamp(0.0, 1.0)
+            if resized_image_rgb.shape[1] == 4:
+                gt_alpha_mask = resized_image_rgb[3:4, ...]
+                depth_image *= gt_alpha_mask
+            else:
+                depth_image *= torch.ones((1, viewpoint_cam.image_height, viewpoint_cam.image_width))
+        else:
+            depth_image = None   
+        '''
+        return viewpoint_image, viewpoint_cam, depth_image
     
     def __len__(self):
         return len(self.viewpoint_stack)

@@ -39,6 +39,7 @@ class Camera:
         self.image = image
         self.gt_alpha_mask = gt_alpha_mask
         self.meta_only = meta_only
+        self.depth = depth
         
         try:
             self.data_device = torch.device(data_device)

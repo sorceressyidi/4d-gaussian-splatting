@@ -10,7 +10,7 @@ exhaust_test: True
 ModelParams:
   sh_degree: 3
   source_path: "data/dnerf/lego"
-  model_path: "output/dnerf/lego"
+  model_path: "output/dnerf/lego2"
   images: "images"
   resolution: 2
   white_background: False

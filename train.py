@@ -52,6 +52,7 @@ def training(
     rot_4d,
     force_sh_3d,
     batch_size,
+    depth_lambda
 ):
 
     if dataset.frame_ratio > 1:
@@ -135,9 +136,15 @@ def training(
             batch_radii = []
 
             for batch_idx in range(batch_size):
-                gt_image, viewpoint_cam = batch_data[batch_idx]
+                gt_image, viewpoint_cam,gt_depth = batch_data[batch_idx]
                 gt_image = gt_image.cuda()
                 viewpoint_cam = viewpoint_cam.cuda()
+                if depth_lambda > 0:
+                    gt_depth = gt_depth[0,:,:].unsqueeze(0)
+                    # save gt_depth as pictures
+
+
+                    gt_depth = gt_depth.cuda()
 
                 # Render
                 render_pkg = render(viewpoint_cam, gaussians, pipe, background)
@@ -154,7 +161,12 @@ def training(
                 Ll1 = l1_loss(image, gt_image)
                 Lssim = 1.0 - ssim(image, gt_image)
                 loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * Lssim
-
+                ####   depth loss    #####
+                
+                if depth_lambda > 0:
+                    Ldepth = l1_loss(depth, gt_depth)
+                    Lssim_depth = 1.0 - ssim(depth,gt_depth)
+                    loss = loss + args.depth_lambda*(1.0-opt.lambda_dssim)*Ldepth + opt.lambda_dssim * Lssim_depth
                 ###### opa mask Loss ######
                 if opt.lambda_opa_mask > 0:
                     o = alpha.clamp(1e-6, 1 - 1e-6)
@@ -260,6 +272,10 @@ def training(
                     progress_bar.close()
 
                 # Log and save
+                if args.depth_lambda>0:
+                    depth_supervision = True
+                else:
+                    depth_supervision = False
                 test_psnr = training_report(
                     tb_writer,
                     iteration,
@@ -272,6 +288,7 @@ def training(
                     render,
                     (pipe, background),
                     loss_dict,
+                    depth_supervision
                 )
                 if iteration in testing_iterations:
                     if test_psnr >= best_psnr:
@@ -364,6 +381,7 @@ def training_report(
     renderFunc,
     renderArgs,
     loss_dict=None,
+    depth_supervision = False,
 ):
     if tb_writer:
         tb_writer.add_scalar("train_loss_patches/l1_loss", Ll1.item(), iteration)
@@ -406,7 +424,13 @@ def training_report(
                 ssim_test = 0.0
                 msssim_test = 0.0
                 for idx, batch_data in enumerate(tqdm(config["cameras"])):
-                    gt_image, viewpoint = batch_data
+                    if config["name"] == "train" and depth_supervision==True :
+                        gt_image, viewpoint, gt_depth = batch_data
+                        gt_depth = easy_cmap(gt_depth[0])
+                        gt_depth = gt_depth.cuda()
+                    else:
+                        gt_image, viewpoint,_ = batch_data
+                    
                     gt_image = gt_image.cuda()
                     viewpoint = viewpoint.cuda()
 
@@ -416,8 +440,13 @@ def training_report(
                     depth = easy_cmap(render_pkg["depth"][0])
                     alpha = torch.clamp(render_pkg["alpha"], 0.0, 1.0).repeat(3, 1, 1)
                     # reduce tensorboard write
-                    if tb_writer and (idx < 5) and (iteration % 1000 == 0):
-                        grid = [gt_image, image, alpha, depth]
+                    if tb_writer and (idx < 5):
+                        if config["name"] == "train" and depth_supervision==True:
+                            grid = [gt_image, image, gt_depth, depth]
+                            #grid = [gt_image, image, alpha, depth]
+                        else:
+                            grid = [gt_image, image, alpha, depth]
+                        
                         grid = make_grid(grid, nrow=2)
                         tb_writer.add_images(
                             config["name"] + "_view_{}/gt_vs_render".format(viewpoint.image_name),
@@ -434,7 +463,7 @@ def training_report(
                 ssim_test /= len(config["cameras"])
                 msssim_test /= len(config["cameras"])
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config["name"], l1_test, psnr_test))
-                if tb_writer and (iteration % 1000 == 0):
+                if tb_writer:
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - l1_loss", l1_test, iteration)
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - psnr", psnr_test, iteration)
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - ssim", ssim_test, iteration)
@@ -477,6 +506,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--seed", type=int, default=6666)
     parser.add_argument("--exhaust_test", action="store_true")
+    parser.add_argument("--depth_lambda",default=0)
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
@@ -522,6 +552,7 @@ if __name__ == "__main__":
         args.rot_4d,
         args.force_sh_3d,
         args.batch_size,
+        args.depth_lambda
     )
 
     # All done
