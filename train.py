@@ -28,7 +28,7 @@ import numpy as np
 from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from torch.utils.data import DataLoader
-
+import math
 try:
     from torch.utils.tensorboard import SummaryWriter
 
@@ -36,6 +36,10 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
+def get_depth_lambda_exponential(iteration, initial_depth_lambda, final_depth_lambda, total_iters):
+    # 指数衰减函数
+    decay_rate = math.log(final_depth_lambda / initial_depth_lambda) / total_iters
+    return initial_depth_lambda * math.exp(decay_rate * iteration)
 
 def training(
     dataset,
@@ -164,9 +168,10 @@ def training(
                 ####   depth loss    #####
                 
                 if depth_lambda > 0:
+                    current_depth_lambda = get_depth_lambda_exponential(iteration, depth_lambda, 0.01, 30000)
                     Ldepth = l1_loss(depth, gt_depth)
                     Lssim_depth = 1.0 - ssim(depth,gt_depth)
-                    loss = loss + args.depth_lambda*(1.0-opt.lambda_dssim)*Ldepth + opt.lambda_dssim * Lssim_depth
+                    loss = loss + current_depth_lambda*(1.0-opt.lambda_dssim)*Ldepth + opt.lambda_dssim * Lssim_depth
                 ###### opa mask Loss ######
                 if opt.lambda_opa_mask > 0:
                     o = alpha.clamp(1e-6, 1 - 1e-6)

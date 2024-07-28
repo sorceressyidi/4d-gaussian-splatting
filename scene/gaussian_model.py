@@ -286,7 +286,7 @@ class GaussianModel:
                 rots_r = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
                 rots_r[:, 0] = 1
 
-        #question ?
+        
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
