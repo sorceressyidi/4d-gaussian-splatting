@@ -8,7 +8,7 @@ import sys
 import math
 import shutil
 import sqlite3
-
+from PIL import Image
 IS_PYTHON3 = sys.version_info[0] >= 3
 MAX_IMAGE_ID = 2**31 - 1
 
@@ -217,7 +217,26 @@ def rotmat(a, b):
     kmat = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
     return np.eye(3) + kmat + kmat.dot(kmat) * ((1 - c) / (s ** 2 + 1e-10))
 
+def read_array(path):
+    with open(path, "rb") as fid:
+        width, height, channels = np.genfromtxt(
+            fid, delimiter="&", max_rows=1, usecols=(0, 1, 2), dtype=int
+        )
+        fid.seek(0)
+        num_delimiter = 0
+        byte = fid.read(1)
+        while True:
+            if byte == b"&":
+                num_delimiter += 1
+                if num_delimiter >= 3:
+                    break
+            byte = fid.read(1)
+        array = np.fromfile(fid, np.float32)
+    array = array.reshape((width, height, channels), order="F")
+    return np.transpose(array, (1, 0, 2)).squeeze()
+
 if __name__ == '__main__':
+    
     parser = argparse.ArgumentParser() # TODO: refine it.
     parser.add_argument("path", default="", help="input path to the video")
     args = parser.parse_args()
@@ -225,16 +244,17 @@ if __name__ == '__main__':
     # path must end with / to make sure image path is relative
     if args.path[-1] != '/':
         args.path += '/'
-        
+    
     # extract images
     videos = [os.path.join(args.path, vname) for vname in os.listdir(args.path) if vname.endswith(".mp4")]
     images_path = os.path.join(args.path, "images/")
     os.makedirs(images_path, exist_ok=True)
     
+    '''
     for video in videos:
         cam_name = video.split('/')[-1].split('.')[-2]
         do_system(f"ffmpeg -i {video} -start_number 0 {images_path}/{cam_name}_%04d.png")
-        
+    '''
     # load data
     images = [f[len(args.path):] for f in sorted(glob.glob(os.path.join(args.path, "images/", "*"))) if f.lower().endswith('png') or f.lower().endswith('jpg') or f.lower().endswith('jpeg')]
     cams = sorted(set([im[7:12] for im in images]))
@@ -250,15 +270,16 @@ if __name__ == '__main__':
     bounds = poses_bounds[:, -2:] # (N, 2)
 
     H, W, fl = poses[0, :, -1] 
-
+    
     print(f'[INFO] H = {H}, W = {W}, fl = {fl}')
 
     # inversion of this: https://github.com/Fyusion/LLFF/blob/c6e27b1ee59cb18f054ccb0f87a90214dbe70482/llff/poses/pose_utils.py#L51
     poses = np.concatenate([poses[..., 1:2], poses[..., 0:1], -poses[..., 2:3], poses[..., 3:4]], -1) # (N, 3, 4)
-    '''
-    poses_bounds are composed of : 
-    [ r11 r12 r13 t1 H r21 r22 r23 t2 W r31 r32 r33 t3 fl b1 b2 ]
-    '''
+    
+    #poses_bounds are composed of : 
+    #[ r11 r12 r13 t1 H r21 r22 r23 t2 W r31 r32 r33 t3 fl b1 b2 ]
+
+
     # to homogeneous 
     last_row = np.tile(np.array([0, 0, 0, 1]), (len(poses), 1, 1)) # (N, 1, 4)
     poses = np.concatenate([poses, last_row], axis=1) # (N, 4, 4) 
@@ -306,6 +327,7 @@ if __name__ == '__main__':
         cam_frames = [{'file_path': im.lstrip("/").split('.')[0], 
                        'transform_matrix': poses[i].tolist(),
                        'time': int(im.lstrip("/").split('.')[0][-4:]) / 30.} for im in images if cams[i] in im]
+        # cam00 for test and cam01-cam20 for train
         if i == 0:
             test_frames += cam_frames
         else:
@@ -333,6 +355,8 @@ if __name__ == '__main__':
     train_output_path = os.path.join(args.path, 'transforms_train.json')
     test_output_path = os.path.join(args.path, 'transforms_test.json')
     print(f'[INFO] write to {train_output_path} and {test_output_path}')
+    # Note: Have to add the depth information to the json file
+
     with open(train_output_path, 'w') as f:
         json.dump(train_transforms, f, indent=2)
     with open(test_output_path, 'w') as f:
@@ -375,6 +399,7 @@ if __name__ == '__main__':
     
     db_path = os.path.join(colmap_workspace, 'database.db')
     
+    # Extract features and save to database
     do_system(f"colmap feature_extractor \
                 --database_path {db_path} \
                 --image_path {os.path.join(colmap_workspace, 'images')}")
@@ -411,7 +436,46 @@ if __name__ == '__main__':
                 --workspace_path {os.path.join(colmap_workspace, 'dense')} \
                 --output_path {os.path.join(args.path, 'points3d.ply')}")
     
-    shutil.rmtree(colmap_workspace)
+    #shutil.rmtree(colmap_workspace)
     os.remove(os.path.join(args.path, 'points3d.ply.vis'))
     
     print(f"[INFO] Initial point cloud is saved in {os.path.join(args.path, 'points3d.ply')}.")
+    
+
+    colmap_workspace = os.path.join(args.path, 'tmp')
+    depth_maps_path = os.path.join(colmap_workspace, "dense/stereo/depth_maps")
+    if not os.path.exists(depth_maps_path):
+        print(f"Depth maps not found in {depth_maps_path}")
+        exit(1)
+    depth_output_path = os.path.join(args.path, 'depth_maps')
+    os.makedirs(depth_output_path, exist_ok=True)
+    
+    # 遍历并保存深度图像
+    for fname in os.listdir(depth_maps_path):
+        if fname.endswith('.geometric.bin'):
+            depth_file = os.path.join(depth_maps_path, fname)
+            #depth_data = np.fromfile(depth_file, dtype=np.float32)
+            depth_image = read_array(depth_file)
+            #print(depth_image.shape)
+            depth_image_normalized = (depth_image - depth_image.min()) / (depth_image.max() - depth_image.min())
+            depth_image_normalized = (depth_image_normalized * 255).astype(np.uint8)
+            depth_image_pil = Image.fromarray(depth_image_normalized)
+            depth_image_pil.save(os.path.join(depth_output_path, fname.replace('.geometric.bin', '.png')))
+
+    # 添加深度图路径到transforms_train.json
+    '''
+    train_json_path = os.path.join(args.path, "transforms_train.json")
+    with open(train_json_path, 'r') as f:
+        transforms_train = json.load(f)
+
+    for frame in transforms_train['frames']:
+        depth_filename = os.path.basename(frame['file_path']) + '.png'
+        frame['depth_file_path'] = os.path.join(depth_output_path, depth_filename)
+
+    with open(train_json_path, 'w') as f:
+        json.dump(transforms_train, f, indent=2)
+
+    print(f"Updated {train_json_path} with depth map paths.")
+    '''
+    # 清理工作空间
+    #shutil.rmtree(colmap_workspace)

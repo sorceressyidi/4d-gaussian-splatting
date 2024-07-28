@@ -1,4 +1,4 @@
-name: 4d_gaussian_splatting
+name: 4dgs
 channels:
   - pytorch
   - conda-forge
