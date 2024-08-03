@@ -6,11 +6,14 @@ rot_4d: True
 force_sh_3d: False
 batch_size: 4
 exhaust_test: True
-#start_checkpoint: "output/N3V/cook_spinach/chkpnt_best.pth"
+start_checkpoint: "output/N3V/cook_sparse/chkpnt_best.pth"
+depth_lambda: 0.1
+
+
 ModelParams:
   sh_degree: 3
   source_path: "data/N3V/cook_spinach"
-  model_path: "output/N3V/cook_spinach"
+  model_path: "output/N3V/cook_sparse"
   images: "images"
   resolution: 2
   white_background: False

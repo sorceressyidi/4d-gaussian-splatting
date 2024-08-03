@@ -56,7 +56,7 @@ def training(
     rot_4d,
     force_sh_3d,
     batch_size,
-    depth_lambda
+    depth_lambda,
 ):
 
     if dataset.frame_ratio > 1:
@@ -108,6 +108,7 @@ def training(
     gaussians.env_map = env_map
 
     training_dataset = scene.getTrainCameras()
+    # note : depth read in dataset_readers.py and loadCam function in camera_utils.py
     training_dataloader = DataLoader(
         training_dataset,
         batch_size=batch_size,
@@ -143,13 +144,11 @@ def training(
                 gt_image, viewpoint_cam,gt_depth = batch_data[batch_idx]
                 gt_image = gt_image.cuda()
                 viewpoint_cam = viewpoint_cam.cuda()
-                if depth_lambda > 0:
+                
+                if depth_lambda > 0 and gt_depth is not None:      
                     gt_depth = gt_depth[0,:,:].unsqueeze(0)
-                    # save gt_depth as pictures
-
-
-                    gt_depth = gt_depth.cuda()
-
+                    gt_depth = gt_depth.cuda()   
+          
                 # Render
                 render_pkg = render(viewpoint_cam, gaussians, pipe, background)
                 image, viewspace_point_tensor, visibility_filter, radii = (
@@ -167,7 +166,7 @@ def training(
                 loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * Lssim
                 ####   depth loss    #####
                 
-                if depth_lambda > 0:
+                if depth_lambda > 0 and gt_depth is not None:
                     current_depth_lambda = get_depth_lambda_exponential(iteration, depth_lambda, 0.01, 30000)
                     Ldepth = l1_loss(depth, gt_depth)
                     Lssim_depth = 1.0 - ssim(depth,gt_depth)
@@ -431,8 +430,9 @@ def training_report(
                 for idx, batch_data in enumerate(tqdm(config["cameras"])):
                     if config["name"] == "train" and depth_supervision==True :
                         gt_image, viewpoint, gt_depth = batch_data
-                        gt_depth = easy_cmap(gt_depth[0])
-                        gt_depth = gt_depth.cuda()
+                        if gt_depth is not None:
+                            gt_depth = easy_cmap(gt_depth[0])
+                            gt_depth = gt_depth.cuda()
                     else:
                         gt_image, viewpoint,_ = batch_data
                     
@@ -446,7 +446,7 @@ def training_report(
                     alpha = torch.clamp(render_pkg["alpha"], 0.0, 1.0).repeat(3, 1, 1)
                     # reduce tensorboard write
                     if tb_writer and (idx < 5):
-                        if config["name"] == "train" and depth_supervision==True:
+                        if config["name"] == "train" and depth_supervision==True and gt_depth is not None:
                             grid = [gt_image, image, gt_depth, depth]
                             #grid = [gt_image, image, alpha, depth]
                         else:

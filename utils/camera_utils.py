@@ -55,7 +55,8 @@ def loadCam(args, id, cam_info, resolution_scale):
         gt_image = cam_info.image
     
     if cam_info.depth is not None:
-        depth = PILtoTorch(cam_info.depth, resolution) * 255 / 10000
+        #depth = PILtoTorch(cam_info.depth, resolution) * 255 / 10000
+        depth = PILtoTorch(cam_info.depth, resolution)
     else:
         depth = None
 
