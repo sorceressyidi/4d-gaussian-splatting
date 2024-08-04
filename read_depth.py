@@ -5,25 +5,14 @@ from pathlib import Path
 from colmapUtils.read_write_model import *
 from colmapUtils.read_write_dense import *
 import json
+from PIL import Image
 
 def _minify(basedir, factors=[], resolutions=[]):
     needtoload = False
-    '''
-    for r in factors:
-        imgdir = os.path.join(basedir, 'images_{}'.format(r))
-        if not os.path.exists(imgdir):
-            needtoload = True
-    for r in resolutions:
-        imgdir = os.path.join(basedir, 'images_{}x{}'.format(r[1], r[0]))
-        if not os.path.exists(imgdir):
-            needtoload = True
-    if not needtoload:
-        return
-    '''
     from shutil import copy
     from subprocess import check_output
     
-    imgdir = os.path.join(basedir, 'tmp','dense','images')
+    imgdir = os.path.join(basedir, 'colmap','dense','images')
     imgs = [os.path.join(imgdir, f) for f in sorted(os.listdir(imgdir))]
     imgs = [f for f in imgs if any([f.endswith(ex) for ex in ['JPG', 'jpg', 'png', 'jpeg', 'PNG']])]
     imgdir_orig = imgdir
@@ -57,14 +46,10 @@ def _minify(basedir, factors=[], resolutions=[]):
             check_output('rm {}/*.{}'.format(imgdir, ext), shell=True)
             print('Removed duplicates')
         print('Done')
-            
-        
-        
-        
 
 def get_poses(images):
     poses = []
-    for i in images:
+    for i in range(1, len(images) + 1):
         R = images[i].qvec2rotmat()
         t = images[i].tvec.reshape([3,1])
         bottom = np.array([0,0,0,1.]).reshape([1,4])
@@ -73,7 +58,6 @@ def get_poses(images):
         poses.append(c2w)
     return np.array(poses)
 
-
 def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     
     poses_arr = np.load(os.path.join(basedir, 'poses_bounds.npy'))
@@ -81,7 +65,7 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1,2,0]) # 3 x 5 x N
     bds = poses_arr[:, -2:].transpose([1,0])
     
-    img0 = [os.path.join(basedir, 'tmp','dense','images', f) for f in sorted(os.listdir(os.path.join(basedir, 'tmp','dense','images'))) \
+    img0 = [os.path.join(basedir, 'colmap','dense','images', f) for f in sorted(os.listdir(os.path.join(basedir, 'colmap','dense','images'))) \
             if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')][0]
     sh = imageio.imread(img0).shape
     
@@ -127,29 +111,78 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
         else:
             return imageio.imread(f)
         
-    imgs = imgs = [imread(f)[...,:3]/255. for f in imgfiles]
+    imgs = [imread(f)[...,:3]/255. for f in imgfiles]
     imgs = np.stack(imgs, -1)  
     
     print('Loaded image data', imgs.shape, poses[:,-1,0])
     return poses, bds, imgs
 
-    
-            
+import numpy as np
+from PIL import Image
+import os
 
-def load_colmap_depth(basedir, factor=8, bd_factor=.75):
+def save_depth_images(data_list, save_dir, image_width, image_height):
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    for idx, data in enumerate(data_list):
+        depth = data['depth']
+        coords = data['coord']
+        image_id = data['id']
+        
+        # Create an empty depth image with the given width and height
+        depth_image = np.zeros((image_height, image_width), dtype=np.float32)
+        
+        # Populate the depth image with depth values
+        for i, coord in enumerate(coords):
+            x, y = int(coord[0]), int(coord[1])
+            if 0 <= x < image_width and 0 <= y < image_height:
+                depth_image[y, x] = depth[i]
+                
+        # Normalize the depth image to the range [0, 255]
+        # Check and print the min and max depth values
+        min_depth = depth_image[np.isfinite(depth_image)].min()
+        max_depth = depth_image[np.isfinite(depth_image)].max()
+        print(f"Min depth: {min_depth}, Max depth: {max_depth}")
+        '''
+        # Normalize the depth image to the range [0, 255]
+        if min_depth != max_depth:
+            depth_image = (depth_image - min_depth) / (max_depth - min_depth) * 255
+        else:
+            depth_image.fill(0)
+        
+        depth_image = depth_image.astype(np.uint8)
+        depth_image_pil = Image.fromarray(depth_image)
+        
+        # Save the depth image as PNG
+        depth_image_path = os.path.join(save_dir, f'depth_{image_id:04d}.png')
+        depth_image_pil.save(depth_image_path)
+        
+        # use plt and save
+        import matplotlib.pyplot as plt
+        plt.imshow(depth_image)
+        plt.axis('off')
+        plt.savefig(depth_image_path, bbox_inches='tight', pad_inches=0)
+        plt.close()
+        
+        print(f'Saved depth image to {depth_image_path}')
+        '''
+
+
+def load_colmap_depth(basedir, factor=1, bd_factor=None):
     data_file = Path(basedir) / 'colmap_depth.npy'
     
-    images = read_images_binary(Path(basedir) /'tmp'/'dense'/ 'sparse' /'images.bin')
-    points = read_points3d_binary(Path(basedir)/'tmp'/'dense' / 'sparse' / 'points3D.bin')
+    images = read_images_binary(Path(basedir) / 'colmap' / 'dense' / 'sparse' / 'images.bin')
+    points = read_points3d_binary(Path(basedir) / 'colmap' / 'dense' / 'sparse' / 'points3D.bin')
 
     Errs = np.array([point3D.error for point3D in points.values()])
     Err_mean = np.mean(Errs)
     print("Mean Projection Error:", Err_mean)
     
     poses = get_poses(images)
-    _, bds_raw, _ = _load_data(basedir, factor=factor) # factor=8 downsamples original imgs by 8x
+    _, bds_raw, _ = _load_data(basedir, factor=factor) # factor=1 downsamples original imgs by 8x
     bds_raw = np.moveaxis(bds_raw, -1, 0).astype(np.float32)
-    # print(bds_raw.shape)
+    
     # Rescale if bd_factor is provided
     sc = 1. if bd_factor is None else 1./(bds_raw.min() * bd_factor)
     
@@ -158,33 +191,66 @@ def load_colmap_depth(basedir, factor=8, bd_factor=.75):
     print('near/far:', near, far)
 
     data_list = []
-    for id_im in range(1, len(images)+1):
+    imgfiles = [os.path.join(basedir, 'images', f) for f in sorted(os.listdir(os.path.join(basedir, 'images'))) if f.endswith(('JPG', 'jpg', 'png'))]
+    
+    if len(imgfiles) > 0:
+        # Assume all images have the same size
+        sample_image = imageio.imread(imgfiles[0])
+        image_height, image_width = sample_image.shape[:2]
+    else:
+        image_height, image_width = 0, 0
+
+    for id_im in range(1, len(images) + 1):
         depth_list = []
         coord_list = []
         weight_list = []
         for i in range(len(images[id_im].xys)):
+            image_id = images[id_im].id
             point2D = images[id_im].xys[i]
             id_3D = images[id_im].point3D_ids[i]
             if id_3D == -1:
                 continue
             point3D = points[id_3D].xyz
-            depth = (poses[id_im-1,:3,2].T @ (point3D - poses[id_im-1,:3,3])) * sc
-            if depth < bds_raw[id_im-1,0] * sc or depth > bds_raw[id_im-1,1] * sc:
+            depth = (poses[id_im - 1, :3, 2].T @ (point3D - poses[id_im - 1, :3, 3])) * sc
+            '''
+            if depth < bds_raw[id_im - 1, 0] * sc or depth > bds_raw[id_im - 1, 1] * sc:
                 continue
+            '''
             err = points[id_3D].error
-            weight = 2 * np.exp(-(err/Err_mean)**2)
+            weight = 2 * np.exp(-(err / Err_mean) ** 2)
             depth_list.append(depth)
-            coord_list.append(point2D/factor)
+            coord_list.append(point2D / factor)
             weight_list.append(weight)
         if len(depth_list) > 0:
-            print(id_im, len(depth_list), np.min(depth_list), np.max(depth_list), np.mean(depth_list))
-            data_list.append({"depth":np.array(depth_list), "coord":np.array(coord_list), "error":np.array(weight_list)})
+            print(image_id, len(depth_list), np.min(depth_list), np.max(depth_list), np.mean(depth_list))
+            data_list.append({"id":image_id, "depth": np.array(depth_list), "coord": np.array(coord_list), "weight": np.array(weight_list),"error":np.array(err)})
         else:
-            print(id_im, len(depth_list))
-    # json.dump(data_list, open(data_file, "w"))
+            print(image_id, len(depth_list))
+
     np.save(data_file, data_list)
+    # Save depth images with image dimensions
+    #save_dir = os.path.join(basedir, 'depth_images')
+    #save_depth_images(data_list, save_dir, image_width, image_height)
+
     return data_list
 
+
 if __name__ == '__main__':
+    
     basedir = 'data/N3V/cook_spinach'
+
+    '''
+    ply_file = os.path.join(basedir, 'points3d.ply')
+    from pyntcloud import PyntCloud
+    # 读取 PLY 文件
+    ply_file = os.path.join(basedir, 'points3d.ply')
+    cloud = PyntCloud.from_file(ply_file)
+
+    # 打印点云的基本信息
+    print("Data:\n", cloud.points.head())
+
+    # 列出所有列名（属性）
+    print("Columns in point cloud:\n", cloud.points.columns)
+    '''
+
     load_colmap_depth(basedir)

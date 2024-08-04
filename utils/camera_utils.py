@@ -16,7 +16,7 @@ from utils.graphics_utils import fov2focal
 
 WARNED = False
 
-def loadCam(args, id, cam_info, resolution_scale):
+def loadCam(args, id, cam_info, resolution_scale,dense=True):
     orig_w, orig_h = cam_info.width, cam_info.height# cam_info.image.size
 
     if args.resolution in [1, 2, 3, 4, 8]:
@@ -56,24 +56,32 @@ def loadCam(args, id, cam_info, resolution_scale):
     
     if cam_info.depth is not None:
         #depth = PILtoTorch(cam_info.depth, resolution) * 255 / 10000
-        depth = PILtoTorch(cam_info.depth, resolution)
+        if dense == True:
+            depth = PILtoTorch(cam_info.depth,resolution,depth=True)
+        else:
+            depth = cam_info.depth
+        if cam_info.error is not None:
+            error = cam_info.error
+        else:
+            error = None
     else:
         depth = None
+        error = None
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=gt_image, gt_alpha_mask=loaded_mask,
                   image_name=cam_info.image_name, uid=id, data_device=args.data_device, 
                   timestamp=cam_info.timestamp,
-                  cx=cx, cy=cy, fl_x=fl_x, fl_y=fl_y, depth=depth, resolution=resolution, image_path=cam_info.image_path,
+                  cx=cx, cy=cy, fl_x=fl_x, fl_y=fl_y, depth=depth,error=error, resolution=resolution, image_path=cam_info.image_path,
                   meta_only=args.dataloader
                   )
 
-def cameraList_from_camInfos(cam_infos, resolution_scale, args):
+def cameraList_from_camInfos(cam_infos, resolution_scale, args,dense=True):
     camera_list = []
 
     for id, c in enumerate(cam_infos):
-        camera_list.append(loadCam(args, id, c, resolution_scale))
+        camera_list.append(loadCam(args, id, c, resolution_scale,dense=dense))
 
     return camera_list
 

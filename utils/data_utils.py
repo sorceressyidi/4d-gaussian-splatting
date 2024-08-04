@@ -35,6 +35,10 @@ class CameraDataset(Dataset):
             depth_image = viewpoint_cam.depth
         else:
             depth_image = None
+        if viewpoint_cam.error is not None:
+            error = viewpoint_cam.error
+        else:
+            error = None
 
         '''
             norm_data = depth_image / 255.0
@@ -50,7 +54,7 @@ class CameraDataset(Dataset):
         else:
             depth_image = None   
         '''
-        return viewpoint_image, viewpoint_cam, depth_image
+        return viewpoint_image, viewpoint_cam, depth_image,error
     
     def __len__(self):
         return len(self.viewpoint_stack)

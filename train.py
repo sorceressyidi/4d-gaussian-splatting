@@ -29,6 +29,9 @@ from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from torch.utils.data import DataLoader
 import math
+import json
+from scipy.stats import norm
+
 try:
     from torch.utils.tensorboard import SummaryWriter
 
@@ -37,9 +40,75 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 def get_depth_lambda_exponential(iteration, initial_depth_lambda, final_depth_lambda, total_iters):
-    # 指数衰减函数
     decay_rate = math.log(final_depth_lambda / initial_depth_lambda) / total_iters
     return initial_depth_lambda * math.exp(decay_rate * iteration)
+
+def kl_divergence_point_to_gaussian(pred, mean, std):
+    """
+    Calculate the KL divergence between a point and a Gaussian distribution.
+    
+    Parameters:
+    pred (float): Predicted value.
+    mean (float): Mean of the Gaussian distribution.
+    std (float): Standard deviation of the Gaussian distribution.
+    
+    Returns:
+    float: Calculated KL divergence.
+    """
+    var = std ** 2
+    return 0.5 * (torch.log(var) + ((pred - mean) ** 2) / var + 1 - torch.log(torch.tensor(2 * torch.pi)))
+
+def cal_depth_loss(depth, gt_depth):
+    """
+    Calculate the depth loss based on KL divergence between predicted and ground truth depths.
+    
+    Parameters:
+    depth (torch.Tensor): The predicted depth image with shape (H, W) on CUDA.
+    gt_depth (torch.Tensor): The ground truth depth image with shape (H, W) on CUDA.
+    sfm_error (dict): Dictionary containing reprojection errors information.
+    
+    Returns:
+    float: Calculated depth loss.
+    """
+    errors = gt_depth['weight']
+    coords = gt_depth['coord']
+    scale_factor = 2
+    coords = [(int(coord[0] / scale_factor), int(coord[1] / scale_factor)) for coord in coords]
+    GT = gt_depth['depth']
+
+    height, width = depth.shape[1],depth.shape[2]
+    depth = depth.squeeze(0)
+    total_kl_divergence = 0.0
+    num_points = 0
+    gt = torch.zeros_like(depth)
+
+    for coord,dep in zip(coords,GT):
+        x, y = int(coord[0]), int(coord[1])
+        # Ensure coordinates are within the image boundaries
+        if 0 <= x < width and 0 <= y < height and dep!= 0:
+            # Get the ground truth and predicted depth values
+            gt[y, x] = dep
+    
+    mask = gt > 0
+    mask = mask.cuda()
+    depth = depth * mask
+    depth = (depth-depth.min())/(depth.max()-depth.min())
+    gt = (gt-gt.min())/(gt.max()-gt.min())
+    depth = depth.cuda()
+    gt = gt.cuda()
+
+    # Compute KL divergence one by one
+    for coord, error in zip(coords, errors):
+        x, y = int(coord[0]), int(coord[1])
+        if 0 <= x < width and 0 <= y < height and gt[y, x] > 0:
+            total_kl_divergence += kl_divergence_point_to_gaussian(depth[y, x], gt[y, x], torch.sqrt(torch.tensor(error, device=depth.device)))
+            num_points += 1
+    
+    # Calculate the average KL divergence
+    depth_loss = total_kl_divergence / num_points if num_points > 0 else torch.tensor(0.0, device=depth.device)
+    return depth_loss.item()
+
+
 
 def training(
     dataset,
@@ -57,6 +126,7 @@ def training(
     force_sh_3d,
     batch_size,
     depth_lambda,
+    dense,
 ):
 
     if dataset.frame_ratio > 1:
@@ -72,7 +142,7 @@ def training(
         force_sh_3d=force_sh_3d,
         sh_degree_t=2 if pipe.eval_shfs_4d else 0,
     )
-    scene = Scene(dataset, gaussians, num_pts=num_pts, num_pts_ratio=num_pts_ratio, time_duration=time_duration)
+    scene = Scene(dataset, gaussians, num_pts=num_pts, num_pts_ratio=num_pts_ratio, time_duration=time_duration,dense=dense)
     gaussians.training_setup(opt)
 
     # Load checkpoint
@@ -141,14 +211,21 @@ def training(
             batch_radii = []
 
             for batch_idx in range(batch_size):
-                gt_image, viewpoint_cam,gt_depth = batch_data[batch_idx]
+                gt_image, viewpoint_cam,gt_depth,error = batch_data[batch_idx]
                 gt_image = gt_image.cuda()
                 viewpoint_cam = viewpoint_cam.cuda()
-                
+                '''
+                if gt_depth is not None:
+                    gt_depth = gt_depth[0,:,:]
+                '''
                 if depth_lambda > 0 and gt_depth is not None:      
-                    gt_depth = gt_depth[0,:,:].unsqueeze(0)
-                    gt_depth = gt_depth.cuda()   
-          
+                    if dense == True:
+                        gt_depth = gt_depth[0,:,:].unsqueeze(0)
+                        gt_depth = gt_depth.permute(0,2,1)
+                        gt_depth = gt_depth.cuda()   
+                    else:
+                        pass
+
                 # Render
                 render_pkg = render(viewpoint_cam, gaussians, pipe, background)
                 image, viewspace_point_tensor, visibility_filter, radii = (
@@ -165,12 +242,21 @@ def training(
                 Lssim = 1.0 - ssim(image, gt_image)
                 loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * Lssim
                 ####   depth loss    #####
-                
                 if depth_lambda > 0 and gt_depth is not None:
-                    current_depth_lambda = get_depth_lambda_exponential(iteration, depth_lambda, 0.01, 30000)
-                    Ldepth = l1_loss(depth, gt_depth)
-                    Lssim_depth = 1.0 - ssim(depth,gt_depth)
-                    loss = loss + current_depth_lambda*(1.0-opt.lambda_dssim)*Ldepth + opt.lambda_dssim * Lssim_depth
+                    if dense:
+                        mask = gt_depth > 0
+                        # put depth = 0 where gt_depth = 0
+                        depth = depth * mask
+                        depth = (depth-depth.min())/(depth.max()-depth.min())
+                        gt_depth = (gt_depth-gt_depth.min())/(gt_depth.max()-gt_depth.min())
+                        current_depth_lambda = get_depth_lambda_exponential(iteration, depth_lambda, 0.01, opt.iterations)
+                        Ldepth = l1_loss(depth, gt_depth)
+                        Lssim_depth = 1.0 - ssim(depth,gt_depth)
+                        loss = (1-current_depth_lambda)*loss + current_depth_lambda*(1.0-opt.lambda_dssim)*Ldepth + opt.lambda_dssim * Lssim_depth
+                    else:
+                        #get image id
+                        depth_loss = cal_depth_loss(depth, gt_depth)
+                        loss = (1-depth_lambda)*loss + depth_lambda*depth_loss
                 ###### opa mask Loss ######
                 if opt.lambda_opa_mask > 0:
                     o = alpha.clamp(1e-6, 1 - 1e-6)
@@ -429,12 +515,12 @@ def training_report(
                 msssim_test = 0.0
                 for idx, batch_data in enumerate(tqdm(config["cameras"])):
                     if config["name"] == "train" and depth_supervision==True :
-                        gt_image, viewpoint, gt_depth = batch_data
+                        gt_image, viewpoint, gt_depth,_ = batch_data
                         if gt_depth is not None:
                             gt_depth = easy_cmap(gt_depth[0])
                             gt_depth = gt_depth.cuda()
                     else:
-                        gt_image, viewpoint,_ = batch_data
+                        gt_image, viewpoint,_,_ = batch_data
                     
                     gt_image = gt_image.cuda()
                     viewpoint = viewpoint.cuda()
@@ -496,7 +582,7 @@ if __name__ == "__main__":
     pp = PipelineParams(parser)
     parser.add_argument("--config", type=str)
     parser.add_argument("--debug_from", type=int, default=-1)
-    parser.add_argument("--detect_anomaly", action="store_true", default=False)
+    parser.add_argument("--detect_anomaly", action="store_true", default=True)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
@@ -512,7 +598,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=6666)
     parser.add_argument("--exhaust_test", action="store_true")
     parser.add_argument("--depth_lambda",default=0)
-
+    parser.add_argument("--dense", default=False, action="store_true")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
@@ -557,7 +643,8 @@ if __name__ == "__main__":
         args.rot_4d,
         args.force_sh_3d,
         args.batch_size,
-        args.depth_lambda
+        args.depth_lambda,
+        args.dense
     )
 
     # All done

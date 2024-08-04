@@ -8,7 +8,11 @@ import sys
 import math
 import shutil
 import sqlite3
+
+from colmapUtils.read_write_model import *
+from colmapUtils.read_write_dense import *
 from PIL import Image
+
 IS_PYTHON3 = sys.version_info[0] >= 3
 MAX_IMAGE_ID = 2**31 - 1
 
@@ -234,6 +238,16 @@ def read_array(path):
         array = np.fromfile(fid, np.float32)
     array = array.reshape((width, height, channels), order="F")
     return np.transpose(array, (1, 0, 2)).squeeze()
+def get_poses(images):
+    poses = []
+    for i in images:
+        R = images[i].qvec2rotmat()
+        t = images[i].tvec.reshape([3,1])
+        bottom = np.array([0,0,0,1.]).reshape([1,4])
+        w2c = np.concatenate([np.concatenate([R, t], 1), bottom], 0)
+        c2w = np.linalg.inv(w2c)
+        poses.append(c2w)
+    return np.array(poses)
 
 if __name__ == '__main__':
     
@@ -272,7 +286,7 @@ if __name__ == '__main__':
     H, W, fl = poses[0, :, -1] 
     
     print(f'[INFO] H = {H}, W = {W}, fl = {fl}')
-
+    '''
     # inversion of this: https://github.com/Fyusion/LLFF/blob/c6e27b1ee59cb18f054ccb0f87a90214dbe70482/llff/poses/pose_utils.py#L51
     poses = np.concatenate([poses[..., 1:2], poses[..., 0:1], -poses[..., 2:3], poses[..., 3:4]], -1) # (N, 3, 4)
     
@@ -441,8 +455,8 @@ if __name__ == '__main__':
     
     print(f"[INFO] Initial point cloud is saved in {os.path.join(args.path, 'points3d.ply')}.")
     
-
-    colmap_workspace = os.path.join(args.path, 'tmp')
+'''
+    colmap_workspace = os.path.join(args.path, 'colmap')
     depth_maps_path = os.path.join(colmap_workspace, "dense/stereo/depth_maps")
     if not os.path.exists(depth_maps_path):
         print(f"Depth maps not found in {depth_maps_path}")
@@ -454,28 +468,62 @@ if __name__ == '__main__':
     for fname in os.listdir(depth_maps_path):
         if fname.endswith('.geometric.bin'):
             depth_file = os.path.join(depth_maps_path, fname)
-            #depth_data = np.fromfile(depth_file, dtype=np.float32)
+            depth_data = np.fromfile(depth_file, dtype=np.float32)
             depth_image = read_array(depth_file)
-            #print(depth_image.shape)
+            print(depth_image.shape)
+            save_path = os.path.join(depth_output_path, fname.replace('.png.geometric.bin', '.npy'))
+            np.save(save_path, depth_image)
+            '''
             depth_image_normalized = (depth_image - depth_image.min()) / (depth_image.max() - depth_image.min())
             depth_image_normalized = (depth_image_normalized * 255).astype(np.uint8)
             depth_image_pil = Image.fromarray(depth_image_normalized)
-            depth_image_pil.save(os.path.join(depth_output_path, fname.replace('.geometric.bin', '.png')))
+            depth_image_pil.save(os.path.join(depth_output_path, fname.replace('.png.geometric.bin', '.png')))
+            '''
+    
+    colmap_workspace = os.path.join(args.path, 'colmap')
+    path = os.path.join(colmap_workspace, 'dense/sparse/points3D.bin')
+    points = read_points3d_binary(path)
+    print(f'[INFO] loaded {len(points)} points from {path}')
+    Errs = np.array([point3D.error for point3D in points.values()])
+    Err_mean = np.mean(Errs)
+    print("Mean Projection Error:", Err_mean)
 
-    # 添加深度图路径到transforms_train.json
-    '''
-    train_json_path = os.path.join(args.path, "transforms_train.json")
-    with open(train_json_path, 'r') as f:
-        transforms_train = json.load(f)
+    path = os.path.join(colmap_workspace, 'dense/sparse/images.bin')
+    images = read_images_binary(path)
+    poses = get_poses(images)
 
-    for frame in transforms_train['frames']:
-        depth_filename = os.path.basename(frame['file_path']) + '.png'
-        frame['depth_file_path'] = os.path.join(depth_output_path, depth_filename)
+    # Example function to convert numpy arrays to lists
+    def convert_to_serializable(data):
+        if isinstance(data, np.ndarray):
+            return data.tolist()  # Convert numpy array to list
+        return data
 
-    with open(train_json_path, 'w') as f:
-        json.dump(transforms_train, f, indent=2)
+    reprojection_errors = []
+    for img_id, image in images.items():
+        coord_list = []
+        error_list = []
+        weight_list = []
+        for point2D, point3D_id in zip(image.xys, image.point3D_ids):
+            if point3D_id == -1:
+                continue
+            point3D = points[point3D_id].xyz
+            err = points[point3D_id].error
+            coord_list.append(convert_to_serializable(point2D))  # Convert numpy array to list
+            error_list.append(convert_to_serializable(err))       # Convert numpy array to list
+            weight = 2 * np.exp(-(err / Err_mean) ** 2)
+            weight_list.append(convert_to_serializable(weight))   # Convert numpy array to list
+        
+        print(img_id, len(coord_list))
+        reprojection_errors.append({
+            'image_id': img_id, 
+            'coords': coord_list, 
+            'errors': error_list, 
+            'weights': weight_list
+        })
 
-    print(f"Updated {train_json_path} with depth map paths.")
-    '''
+    # Save to JSON
+    with open(os.path.join(args.path, 'reprojection_errors.json'), 'w') as f:
+        json.dump(reprojection_errors, f, indent=2)
+
     # 清理工作空间
     #shutil.rmtree(colmap_workspace)

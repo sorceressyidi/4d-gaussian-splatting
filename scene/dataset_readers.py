@@ -36,6 +36,7 @@ class CameraInfo(NamedTuple):
     FovX: np.array
     image: np.array
     depth: np.array
+    error: dict
     image_path: str
     image_name: str
     width: int
@@ -224,14 +225,14 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, num_pts_ratio=1.0):
                            ply_path=ply_path)
     return scene_info
 
-def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png", time_duration=None, frame_ratio=1, dataloader=False):
+def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png", time_duration=None, frame_ratio=1, dataloader=False,dense=True):
     cam_infos = []
 
     with open(os.path.join(path, transformsfile)) as json_file:
         contents = json.load(json_file)
     if "camera_angle_x" in contents:
         fovx = contents["camera_angle_x"]
-        
+    
     frames = contents["frames"]
     tbar = tqdm(range(len(frames)))
     def frame_read_fn(idx_frame):
@@ -279,14 +280,49 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             width, height = imagesize.get(image_path)
         
         # Note here for depth supervision
-        if 'depth_path' in frame:
-            depth_name = frame["depth_path"]
-            if not extension in frame["depth_path"]:
-                depth_name = frame["depth_path"] + extension
-            depth_path = os.path.join(path, depth_name)
-            depth = Image.open(depth_path).copy()
+        if dense == True:
+            if 'depth_path' in frame:
+                depth_name = frame["depth_path"]
+                extension_depth = ".npy"
+                if not extension_depth in frame["depth_path"]:
+                    depth_name = frame["depth_path"] + extension_depth
+                depth_path = os.path.join(path, depth_name)
+                '''
+                depth saved in this way:
+                save_path = os.path.join(depth_output_path, fname.replace('.png.geometric.bin', '.npy'))
+                np.save(save_path, depth_image)
+                '''
+                # load npy
+                depth = np.load(depth_path,allow_pickle=True)
+                if 're_err' in frame:
+                    image_id = frame["re_err"]
+                    with open(os.path.join(path, "reprojection_errors.json")) as f:
+                        reprojection_errors = json.load(f)
+                    for image_errors in reprojection_errors:
+                        if image_errors['image_id'] == image_id:
+                            error = image_errors
+                else:
+                    error = None
+            else:
+                depth = None
+                error = None
         else:
-            depth = None
+            suffix = "_0000"
+            prefix = "cam"
+            file_path = frame['file_path']
+            if file_path.endswith(suffix):
+                start_index = file_path.find(prefix) + len(prefix)
+                end_index = file_path.find('_', start_index)
+                number = file_path[start_index:end_index]
+                idx = int(number)
+                error = None
+                depth_dir = os.path.join(path,"colmap_depth.npy")
+                depth = np.load(depth_dir,allow_pickle=True)
+                depth = depth[idx-1]
+            else:
+                error = None
+                depth = None
+
         tbar.update(1)
         if 'fl_x' in frame and 'fl_y' in frame and 'cx' in frame and 'cy' in frame:
             FovX = FovY = -1.0
@@ -294,7 +330,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             fl_y = frame['fl_y']
             cx = frame['cx']
             cy = frame['cy']
-            return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,
+            return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,error=error,
                         image_path=image_path, image_name=image_name, width=width, height=height, timestamp=timestamp,
                         fl_x=fl_x, fl_y=fl_y, cx=cx, cy=cy)
             
@@ -304,14 +340,14 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             fl_y = contents['fl_y']
             cx = contents['cx']
             cy = contents['cy']
-            return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,
+            return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,error=error,
                         image_path=image_path, image_name=image_name, width=width, height=height, timestamp=timestamp,
                         fl_x=fl_x, fl_y=fl_y, cx=cx, cy=cy)
         else:
             fovy = focal2fov(fov2focal(fovx, width), height)
             FovY = fovy
             FovX = fovx
-            return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,
+            return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,error = error,
                             image_path=image_path, image_name=image_name, width=width, height=height, timestamp=timestamp)
     
     with ThreadPool() as pool:
@@ -323,10 +359,10 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
     
     return cam_infos
 
-def readNerfSyntheticInfo(path, white_background, eval, extension=".png", num_pts=100_000, time_duration=None, num_extra_pts=0, frame_ratio=1, dataloader=False):
+def readNerfSyntheticInfo(path, white_background, eval, extension=".png", num_pts=100_000, time_duration=None, num_extra_pts=0, frame_ratio=1, dataloader=False,dense=True):
     
     print("Reading Training Transforms")
-    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension, time_duration=time_duration, frame_ratio=frame_ratio, dataloader=dataloader)
+    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension, time_duration=time_duration, frame_ratio=frame_ratio, dataloader=dataloader,dense=dense)
     print("Reading Test Transforms")
     test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json" if not path.endswith('lego') else "transforms_val.json", white_background, extension, time_duration=time_duration, frame_ratio=frame_ratio, dataloader=dataloader)
     
