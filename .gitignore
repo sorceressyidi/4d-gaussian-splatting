@@ -22,3 +22,4 @@ eggs/
 *.egg
 *.sh
 mdata
+debug

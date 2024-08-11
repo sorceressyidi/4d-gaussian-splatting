@@ -12,6 +12,7 @@
 import os
 import random
 import torch
+import torch.nn.functional as F
 from torch import nn
 from utils.loss_utils import l1_loss, ssim, msssim
 from gaussian_renderer import render
@@ -43,70 +44,84 @@ def get_depth_lambda_exponential(iteration, initial_depth_lambda, final_depth_la
     decay_rate = math.log(final_depth_lambda / initial_depth_lambda) / total_iters
     return initial_depth_lambda * math.exp(decay_rate * iteration)
 
+
 def kl_divergence_point_to_gaussian(pred, mean, std):
     """
-    Calculate the KL divergence between a point and a Gaussian distribution.
-    
+    Calculate the KL divergence between points and a Gaussian distribution.
     Parameters:
-    pred (float): Predicted value.
-    mean (float): Mean of the Gaussian distribution.
-    std (float): Standard deviation of the Gaussian distribution.
+    pred (torch.Tensor): Predicted values (tensor).
+    mean (torch.Tensor): Mean of the Gaussian distribution (tensor).
+    std (torch.Tensor): Standard deviation of the Gaussian distribution (tensor).
     
     Returns:
-    float: Calculated KL divergence.
+    torch.Tensor: Calculated KL divergence for each point (tensor).
     """
+    std = torch.clamp(std, min=1e-8)  # Avoid division by zero
     var = std ** 2
-    return 0.5 * (torch.log(var) + ((pred - mean) ** 2) / var + 1 - torch.log(torch.tensor(2 * torch.pi)))
+    log_term = torch.log(var) + torch.log(torch.tensor(2.0 * torch.pi, device=pred.device))
+    kl_div = 0.5 * (log_term + ((pred - mean) ** 2) / var + 1)
+    return kl_div
+
+import torch
 
 def cal_depth_loss(depth, gt_depth):
     """
-    Calculate the depth loss based on KL divergence between predicted and ground truth depths.
+    Calculate the depth loss based on weighted MSE between predicted and ground truth depths.
     
     Parameters:
     depth (torch.Tensor): The predicted depth image with shape (H, W) on CUDA.
     gt_depth (torch.Tensor): The ground truth depth image with shape (H, W) on CUDA.
-    sfm_error (dict): Dictionary containing reprojection errors information.
     
     Returns:
-    float: Calculated depth loss.
+    torch.Tensor: Calculated depth loss.
     """
-    errors = gt_depth['weight']
-    coords = gt_depth['coord']
-    scale_factor = 2
-    coords = [(int(coord[0] / scale_factor), int(coord[1] / scale_factor)) for coord in coords]
-    GT = gt_depth['depth']
+    with torch.no_grad():
+        errors = gt_depth['error']
+        coords = gt_depth['coord']
+        weights = gt_depth['weight']
+        scale_factor = 2
+        coords = [(int(coord[0] / scale_factor), int(coord[1] / scale_factor)) for coord in coords]
+        GT = gt_depth['depth']
 
-    height, width = depth.shape[1],depth.shape[2]
+        height, width = depth.shape[1], depth.shape[2]
+        gt = torch.zeros_like(depth)
+        valid_coords = []
+        for coord, dep in zip(coords, GT):
+            x, y = int(coord[0]), int(coord[1])
+            if 0 <= x < width and 0 <= y < height and dep != 0:
+                gt[y, x] = dep
+                valid_coords.append((x, y))
+                
     depth = depth.squeeze(0)
-    total_kl_divergence = 0.0
-    num_points = 0
-    gt = torch.zeros_like(depth)
+    if len(valid_coords) > 100:
+        gt = gt.to(depth.device)
+        gt = torch.clamp(gt, 0.1, 100)
+        mask = gt > 0
+        depth = depth * mask
+        
+        epsilon = 1e-8  # To avoid division by zero
+        depth = (depth - depth.min()) / (depth.max() - depth.min() + epsilon)
+        gt = (gt - gt.min()) / (gt.max() - gt.min() + epsilon)
 
-    for coord,dep in zip(coords,GT):
-        x, y = int(coord[0]), int(coord[1])
-        # Ensure coordinates are within the image boundaries
-        if 0 <= x < width and 0 <= y < height and dep!= 0:
-            # Get the ground truth and predicted depth values
-            gt[y, x] = dep
+        valid_coords = torch.tensor(valid_coords, device=depth.device)
+        valid_errors = torch.tensor([error for coord, error in zip(coords, errors) 
+                                     if 0 <= int(coord[0]) < width and 0 <= int(coord[1]) < height], 
+                                    device=depth.device)
+        #weight = 2 * np.exp(-(err / Err_mean) ** 2) use this to compute valid weight
+        Err_mean = valid_errors.mean()
+        # Calculate the weights based on the given formula
+        valid_weights = 2 * torch.exp(-(valid_errors / Err_mean) ** 2)
+        valid_x, valid_y = valid_coords[:, 0], valid_coords[:, 1]
+        
+        # Calculate weighted MSE
+        depth_loss = torch.mean((depth[valid_y, valid_x] - gt[valid_y, valid_x]) ** 2 * valid_weights)
+        #total_kl_divergence = kl_divergence_point_to_gaussian(depth[valid_y, valid_x], gt[valid_y, valid_x], valid_errors)
+        #depth_loss = total_kl_divergence.mean()
+    else:
+        depth_loss = torch.tensor(0.0, device=depth.device)
     
-    mask = gt > 0
-    mask = mask.cuda()
-    depth = depth * mask
-    depth = (depth-depth.min())/(depth.max()-depth.min())
-    gt = (gt-gt.min())/(gt.max()-gt.min())
-    depth = depth.cuda()
-    gt = gt.cuda()
+    return depth_loss
 
-    # Compute KL divergence one by one
-    for coord, error in zip(coords, errors):
-        x, y = int(coord[0]), int(coord[1])
-        if 0 <= x < width and 0 <= y < height and gt[y, x] > 0:
-            total_kl_divergence += kl_divergence_point_to_gaussian(depth[y, x], gt[y, x], torch.sqrt(torch.tensor(error, device=depth.device)))
-            num_points += 1
-    
-    # Calculate the average KL divergence
-    depth_loss = total_kl_divergence / num_points if num_points > 0 else torch.tensor(0.0, device=depth.device)
-    return depth_loss.item()
 
 
 
@@ -160,6 +175,8 @@ def training(
     ema_loss_for_log = 0.0
     ema_l1loss_for_log = 0.0
     ema_ssimloss_for_log = 0.0
+    ema_depthloss_for_log = 0.0
+    depth_list = []
     lambda_all = [key for key in opt.__dict__.keys() if key.startswith("lambda") and key != "lambda_dssim"]
     for lambda_name in lambda_all:
         vars()[f"ema_{lambda_name.replace('lambda_','')}_for_log"] = 0.0
@@ -241,6 +258,8 @@ def training(
                 Ll1 = l1_loss(image, gt_image)
                 Lssim = 1.0 - ssim(image, gt_image)
                 loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * Lssim
+                Ldepth = torch.tensor(0.0, device=gt_image.device)
+                
                 ####   depth loss    #####
                 if depth_lambda > 0 and gt_depth is not None:
                     if dense:
@@ -249,14 +268,25 @@ def training(
                         depth = depth * mask
                         depth = (depth-depth.min())/(depth.max()-depth.min())
                         gt_depth = (gt_depth-gt_depth.min())/(gt_depth.max()-gt_depth.min())
+
                         current_depth_lambda = get_depth_lambda_exponential(iteration, depth_lambda, 0.01, opt.iterations)
                         Ldepth = l1_loss(depth, gt_depth)
                         Lssim_depth = 1.0 - ssim(depth,gt_depth)
-                        loss = (1-current_depth_lambda)*loss + current_depth_lambda*(1.0-opt.lambda_dssim)*Ldepth + opt.lambda_dssim * Lssim_depth
+                        loss = loss + current_depth_lambda*(1.0-opt.lambda_dssim)*Ldepth + opt.lambda_dssim * Lssim_depth
                     else:
                         #get image id
-                        depth_loss = cal_depth_loss(depth, gt_depth)
-                        loss = (1-depth_lambda)*loss + depth_lambda*depth_loss
+                        image_id = gt_depth["id"]
+                        Ldepth = cal_depth_loss(depth, gt_depth)
+                        with torch.no_grad():
+                            if Ldepth!=0:
+                                print("depth loss: ",Ldepth,"image_id: ",gt_depth["id"])
+                            # update loss at each iteration and update the image id(use tuple)
+                            #depth_list[iteration] = Ldepth
+                            #depth_list[iteration] = (image_id,Ldepth)
+
+                            depth_list.append([iteration, image_id,Ldepth])
+                        #tb_writer.add_scalar("train_loss_patches/depth_loss", Ldepth.item(), iteration)
+                        loss = loss + depth_lambda*Ldepth
                 ###### opa mask Loss ######
                 if opt.lambda_opa_mask > 0:
                     o = alpha.clamp(1e-6, 1 - 1e-6)
@@ -300,6 +330,7 @@ def training(
 
                 loss = loss / batch_size
                 loss.backward()
+                
                 batch_point_grad.append(torch.norm(viewspace_point_tensor.grad[:, :2], dim=-1))
                 batch_radii.append(radii)
                 batch_visibility_filter.append(visibility_filter)
@@ -326,14 +357,70 @@ def training(
                     batch_t_grad = gaussians._t.grad.clone().detach()
 
             iter_end.record()
-            loss_dict = {"Ll1": Ll1, "Lssim": Lssim}
+            
+            loss_dict = {"Ll1": Ll1, "Lssim": Lssim,"Ldepth":Ldepth}
+            
+            # save depth_list as matplotlib graph every 100 iterations
 
+            if iteration % 500 == 0:
+                with torch.no_grad():
+                    # save depth_list as matplotlib graph (png) note : depth_list defined as depth_list[iteration] = (image_id,Ldepth)
+                    import matplotlib.pyplot as plt
+                    import pandas as pd
+                    # use different color for each image(saved in image_id)
+                    df = pd.DataFrame(depth_list, columns=["Iteration", "Image ID", "Depth Loss"])
+                    if not df.empty:
+                        unique_image_ids = df["Image ID"].unique()
+                        colors = plt.cm.get_cmap('tab20', len(unique_image_ids))  # 使用 'tab20' colormap，最多 20 种颜色
+                        fig, ax = plt.subplots()
+                        for i, image_id in enumerate(unique_image_ids):
+                            image_df = df[df["Image ID"] == image_id]
+                            ax.plot(image_df["Iteration"], image_df["Depth Loss"], marker='o', linestyle='-', 
+                                    color=colors(i), label=f'Image ID {image_id}')
+
+                        ax.set_title('Depth Loss vs Iteration')
+                        ax.set_xlabel('Iteration')
+                        ax.set_ylabel('Depth Loss')
+
+                        ax.legend()
+
+                        save_path = os.path.join(args.model_path, 'depth_list.png')
+                        plt.savefig(save_path, bbox_inches='tight')
+                        plt.close()
+
+                    '''
+                    import matplotlib.pyplot as plt
+                    import pandas as pd
+
+                    df = pd.DataFrame(list(depth_list.items()), columns=["Iteration", "Depth Loss"])
+                    # use gpu to plot
+                    if df.empty:
+                        pass
+                    else:
+                        fig, ax = plt.subplots()
+                        ax.plot(df["Iteration"], df["Depth Loss"], marker='o', linestyle='-', color='b')
+
+                        # 设置标题和标签
+                        ax.set_title('Depth Loss vs Iteration')
+                        ax.set_xlabel('Iteration')
+                        ax.set_ylabel('Depth Loss')
+                        # 保存为 PNG 文件
+                        save_path = os.path.join(args.model_path, 'depth_list.png')
+                        plt.savefig(save_path, bbox_inches='tight')
+                        plt.close()
+                    '''
+                
+            
             with torch.no_grad():
                 psnr_for_log = psnr(image, gt_image).mean().double()
                 # Progress bar
                 ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
                 ema_l1loss_for_log = 0.4 * Ll1.item() + 0.6 * ema_l1loss_for_log
-                ema_ssimloss_for_log = 0.4 * Lssim.item() + 0.6 * ema_ssimloss_for_log
+                ema_ssimloss_for_log =  0.4*Lssim.item() + 0.6 * ema_ssimloss_for_log
+                if depth_lambda > 0 and gt_depth is not None and Ldepth!=0:
+                    ema_depthloss_for_log =  Ldepth.item()
+                else:
+                    pass
 
                 for lambda_name in lambda_all:
                     if opt.__dict__[lambda_name] > 0:
@@ -349,6 +436,7 @@ def training(
                         "PSNR": f"{psnr_for_log:.{2}f}",
                         "Ll1": f"{ema_l1loss_for_log:.{4}f}",
                         "Lssim": f"{ema_ssimloss_for_log:.{4}f}",
+                        "Ldepth": f"{ema_depthloss_for_log:.{4}f}",
                     }
 
                     for lambda_name in lambda_all:
@@ -372,6 +460,7 @@ def training(
                     Ll1,
                     loss,
                     l1_loss,
+                    Ldepth,
                     iter_start.elapsed_time(iter_end),
                     testing_iterations,
                     scene,
@@ -465,6 +554,7 @@ def training_report(
     Ll1,
     loss,
     l1_loss,
+    Ldepth,
     elapsed,
     testing_iterations,
     scene: Scene,
@@ -477,6 +567,7 @@ def training_report(
         tb_writer.add_scalar("train_loss_patches/l1_loss", Ll1.item(), iteration)
         tb_writer.add_scalar("train_loss_patches/ssim_loss", Ll1.item(), iteration)
         tb_writer.add_scalar("train_loss_patches/total_loss", loss.item(), iteration)
+        #tb_writer.add_scalar("train_loss_patches/depth_loss", Ldepth.item(), iteration)
         tb_writer.add_scalar("iter_time", elapsed, iteration)
         tb_writer.add_scalar("total_points", scene.gaussians.get_xyz.shape[0], iteration)
         tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
@@ -513,6 +604,7 @@ def training_report(
                 psnr_test = 0.0
                 ssim_test = 0.0
                 msssim_test = 0.0
+                depth_test = 0.0
                 for idx, batch_data in enumerate(tqdm(config["cameras"])):
                     if config["name"] == "train" and depth_supervision==True :
                         gt_image, viewpoint, gt_depth,_ = batch_data
@@ -559,6 +651,7 @@ def training_report(
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - psnr", psnr_test, iteration)
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - ssim", ssim_test, iteration)
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - msssim", msssim_test, iteration)
+
                 if config["name"] == "test":
                     psnr_test_iter = psnr_test.item()
 

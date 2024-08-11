@@ -104,6 +104,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_opa_mask = 0.0
         self.lambda_rigid = 0.0
         self.lambda_motion = 0.0
+        self.lambda_depth = 0.0
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):
