@@ -12,7 +12,7 @@ def _minify(basedir, factors=[], resolutions=[]):
     from shutil import copy
     from subprocess import check_output
     
-    imgdir = os.path.join(basedir, 'colmap','dense','images')
+    imgdir = os.path.join(basedir, 'tmp','dense','images')
     imgs = [os.path.join(imgdir, f) for f in sorted(os.listdir(imgdir))]
     imgs = [f for f in imgs if any([f.endswith(ex) for ex in ['JPG', 'jpg', 'png', 'jpeg', 'PNG']])]
     imgdir_orig = imgdir
@@ -65,7 +65,7 @@ def _load_data(basedir, factor=None, width=None, height=None, load_imgs=True):
     poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1,2,0]) # 3 x 5 x N
     bds = poses_arr[:, -2:].transpose([1,0])
     
-    img0 = [os.path.join(basedir, 'colmap','dense','images', f) for f in sorted(os.listdir(os.path.join(basedir, 'colmap','dense','images'))) \
+    img0 = [os.path.join(basedir, 'tmp','dense','images', f) for f in sorted(os.listdir(os.path.join(basedir, 'tmp','dense','images'))) \
             if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')][0]
     sh = imageio.imread(img0).shape
     
@@ -168,8 +168,8 @@ def save_depth_images(data_list, save_dir, image_width, image_height):
 def load_colmap_depth(basedir, factor=1, bd_factor=None):
     data_file = Path(basedir) / 'colmap_depth.npy'
     
-    images = read_images_binary(Path(basedir) / 'colmap' / 'dense' / 'sparse' / 'images.bin')
-    points = read_points3d_binary(Path(basedir) / 'colmap' / 'dense' / 'sparse' / 'points3D.bin')
+    images = read_images_binary(Path(basedir) / 'tmp' / 'dense' / 'sparse' / 'images.bin')
+    points = read_points3d_binary(Path(basedir) / 'tmp' / 'dense' / 'sparse' / 'points3D.bin')
 
     Errs = np.array([point3D.error for point3D in points.values()])
     Err_mean = np.mean(Errs)

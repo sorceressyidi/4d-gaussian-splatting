@@ -82,9 +82,9 @@ def cal_depth_loss(depth, gt_depth):
         scale_factor = 2
         coords = [(int(coord[0] / scale_factor), int(coord[1] / scale_factor)) for coord in coords]
         GT = gt_depth['depth']
-
+        
         height, width = depth.shape[1], depth.shape[2]
-        gt = torch.zeros_like(depth)
+        gt = torch.zeros(height, width, dtype=torch.float32)
         valid_coords = []
         for coord, dep in zip(coords, GT):
             x, y = int(coord[0]), int(coord[1])
@@ -93,7 +93,7 @@ def cal_depth_loss(depth, gt_depth):
                 valid_coords.append((x, y))
                 
     depth = depth.squeeze(0)
-    if len(valid_coords) > 100:
+    if len(valid_coords) > 0:
         gt = gt.to(depth.device)
         gt = torch.clamp(gt, 0.1, 100)
         mask = gt > 0
@@ -104,13 +104,21 @@ def cal_depth_loss(depth, gt_depth):
         gt = (gt - gt.min()) / (gt.max() - gt.min() + epsilon)
 
         valid_coords = torch.tensor(valid_coords, device=depth.device)
+        
         valid_errors = torch.tensor([error for coord, error in zip(coords, errors) 
                                      if 0 <= int(coord[0]) < width and 0 <= int(coord[1]) < height], 
                                     device=depth.device)
-        #weight = 2 * np.exp(-(err / Err_mean) ** 2) use this to compute valid weight
+        
+        valid_weights = torch.tensor([weight for coord,weight in zip(coords,weights) 
+                                      if 0 <= int(coord[0]) < width and 0 <= int(coord[1]) < height], 
+                                    device=depth.device)
+        '''
+
+        #weight = 2 * np.exp(-(err / Err_mean) ** 2) #use this to compute valid weight
         Err_mean = valid_errors.mean()
         # Calculate the weights based on the given formula
         valid_weights = 2 * torch.exp(-(valid_errors / Err_mean) ** 2)
+        '''
         valid_x, valid_y = valid_coords[:, 0], valid_coords[:, 1]
         
         # Calculate weighted MSE
@@ -119,7 +127,7 @@ def cal_depth_loss(depth, gt_depth):
         #depth_loss = total_kl_divergence.mean()
     else:
         depth_loss = torch.tensor(0.0, device=depth.device)
-    
+    torch.cuda.empty_cache()
     return depth_loss
 
 
@@ -284,8 +292,7 @@ def training(
                             #depth_list[iteration] = Ldepth
                             #depth_list[iteration] = (image_id,Ldepth)
 
-                            depth_list.append([iteration, image_id,Ldepth])
-                        #tb_writer.add_scalar("train_loss_patches/depth_loss", Ldepth.item(), iteration)
+                            depth_list.append([iteration, image_id,Ldepth])  
                         loss = loss + depth_lambda*Ldepth
                 ###### opa mask Loss ######
                 if opt.lambda_opa_mask > 0:
@@ -361,34 +368,35 @@ def training(
             loss_dict = {"Ll1": Ll1, "Lssim": Lssim,"Ldepth":Ldepth}
             
             # save depth_list as matplotlib graph every 100 iterations
-
+            
             if iteration % 500 == 0:
                 with torch.no_grad():
                     # save depth_list as matplotlib graph (png) note : depth_list defined as depth_list[iteration] = (image_id,Ldepth)
                     import matplotlib.pyplot as plt
                     import pandas as pd
                     # use different color for each image(saved in image_id)
-                    df = pd.DataFrame(depth_list, columns=["Iteration", "Image ID", "Depth Loss"])
+                    df = pd.DataFrame(depth_list, columns=["Iteration", "ID", "Depth Loss"])
                     if not df.empty:
-                        unique_image_ids = df["Image ID"].unique()
+                        unique_image_ids = df["ID"].unique()
                         colors = plt.cm.get_cmap('tab20', len(unique_image_ids))  # 使用 'tab20' colormap，最多 20 种颜色
                         fig, ax = plt.subplots()
                         for i, image_id in enumerate(unique_image_ids):
-                            image_df = df[df["Image ID"] == image_id]
+                            image_df = df[df["ID"] == image_id]
                             ax.plot(image_df["Iteration"], image_df["Depth Loss"], marker='o', linestyle='-', 
-                                    color=colors(i), label=f'Image ID {image_id}')
+                                    color=colors(i), label=f'ID {image_id}')
 
                         ax.set_title('Depth Loss vs Iteration')
                         ax.set_xlabel('Iteration')
                         ax.set_ylabel('Depth Loss')
 
-                        ax.legend()
+                        # 设置图例字体大小，并将图例放在图外
+                        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize='small')
 
                         save_path = os.path.join(args.model_path, 'depth_list.png')
                         plt.savefig(save_path, bbox_inches='tight')
                         plt.close()
 
-                    '''
+                '''
                     import matplotlib.pyplot as plt
                     import pandas as pd
 
@@ -474,10 +482,12 @@ def training(
                         best_psnr = test_psnr
                         print("\n[ITER {}] Saving best checkpoint".format(iteration))
                         torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt_best.pth")
+                        torch.cuda.empty_cache() 
 
                 if iteration in saving_iterations or iteration % 5000 ==0:
                     print("\n[ITER {}] Saving Gaussians".format(iteration))
                     scene.save(iteration)
+                    torch.cuda.empty_cache() 
 
                 # Densification
                 if iteration < opt.densify_until_iter and (
@@ -522,8 +532,10 @@ def training(
                     if pipe.env_map_res and iteration < pipe.env_optimize_until:
                         env_map_optimizer.step()
                         env_map_optimizer.zero_grad(set_to_none=True)
+                
+                torch.cuda.empty_cache()
 
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
 
 def prepare_output_and_logger(args):
     if not args.model_path:
