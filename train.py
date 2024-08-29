@@ -14,14 +14,15 @@ import random
 import torch
 import torch.nn.functional as F
 from torch import nn
-from utils.loss_utils import l1_loss, ssim, msssim
+from utils.loss_utils import l1_loss, ssim, msssim,l2_loss,l1_loss_masked
 from gaussian_renderer import render
 import sys
 from scene import Scene, GaussianModel
-from utils.general_utils import safe_state, knn
+from utils.general_utils import safe_state, knn,get_expon_lr_func
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr, easy_cmap
+from utils.image_utils import psnr, easy_cmap,normalize,interpolate
+import utils.turbocolor
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from torchvision.utils import make_grid
@@ -40,31 +41,8 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def get_depth_lambda_exponential(iteration, initial_depth_lambda, final_depth_lambda, total_iters):
-    decay_rate = math.log(final_depth_lambda / initial_depth_lambda) / total_iters
-    return initial_depth_lambda * math.exp(decay_rate * iteration)
 
-
-def kl_divergence_point_to_gaussian(pred, mean, std):
-    """
-    Calculate the KL divergence between points and a Gaussian distribution.
-    Parameters:
-    pred (torch.Tensor): Predicted values (tensor).
-    mean (torch.Tensor): Mean of the Gaussian distribution (tensor).
-    std (torch.Tensor): Standard deviation of the Gaussian distribution (tensor).
-    
-    Returns:
-    torch.Tensor: Calculated KL divergence for each point (tensor).
-    """
-    std = torch.clamp(std, min=1e-8)  # Avoid division by zero
-    var = std ** 2
-    log_term = torch.log(var) + torch.log(torch.tensor(2.0 * torch.pi, device=pred.device))
-    kl_div = 0.5 * (log_term + ((pred - mean) ** 2) / var + 1)
-    return kl_div
-
-import torch
-
-def cal_depth_loss(depth, gt_depth):
+def cal_depth_loss(depth, gt_depth,lambda_dssim=0.85):
     """
     Calculate the depth loss based on weighted MSE between predicted and ground truth depths.
     
@@ -76,34 +54,35 @@ def cal_depth_loss(depth, gt_depth):
     torch.Tensor: Calculated depth loss.
     """
     with torch.no_grad():
-        errors = gt_depth['error']
+        #errors = gt_depth['error']
         coords = gt_depth['coord']
-        weights = gt_depth['weight']
-        scale_factor = 2
-        coords = [(int(coord[0] / scale_factor), int(coord[1] / scale_factor)) for coord in coords]
+        #weights = gt_depth['weight']
+        coords = [(int(coord[0] ), int(coord[1] )) for coord in coords]
         GT = gt_depth['depth']
         
         height, width = depth.shape[1], depth.shape[2]
         gt = torch.zeros(height, width, dtype=torch.float32)
         valid_coords = []
-        for coord, dep in zip(coords, GT):
-            x, y = int(coord[0]), int(coord[1])
-            if 0 <= x < width and 0 <= y < height and dep != 0:
-                gt[y, x] = dep
-                valid_coords.append((x, y))
-                
-    depth = depth.squeeze(0)
-    if len(valid_coords) > 0:
-        gt = gt.to(depth.device)
-        gt = torch.clamp(gt, 0.1, 100)
-        mask = gt > 0
-        depth = depth * mask
-        
-        epsilon = 1e-8  # To avoid division by zero
-        depth = (depth - depth.min()) / (depth.max() - depth.min() + epsilon)
-        gt = (gt - gt.min()) / (gt.max() - gt.min() + epsilon)
 
-        valid_coords = torch.tensor(valid_coords, device=depth.device)
+        for i, coord in enumerate(coords):
+                x, y = int(coord[0]), int(coord[1])
+                if 0 <= x < width and 0 <= y < height:
+                    gt[y, x] = GT[i]
+                    valid_coords.append((x, y))
+                
+    del GT
+    if len(valid_coords) > 100:
+        gt = gt.unsqueeze(0)
+        gt = gt.to(depth.device)
+        #gt = torch.clamp(gt, 0.1, 100)
+        mask = gt > 0
+        mask = mask.to(depth.device)
+        #depth = depth * mask      
+        depth_loss = l1_loss_masked(depth, gt, mask)
+       
+
+        '''
+        valid_coords = torch.tensor(valid_coords, device=depth.device)  
         
         valid_errors = torch.tensor([error for coord, error in zip(coords, errors) 
                                      if 0 <= int(coord[0]) < width and 0 <= int(coord[1]) < height], 
@@ -112,22 +91,26 @@ def cal_depth_loss(depth, gt_depth):
         valid_weights = torch.tensor([weight for coord,weight in zip(coords,weights) 
                                       if 0 <= int(coord[0]) < width and 0 <= int(coord[1]) < height], 
                                     device=depth.device)
-        '''
-
+        del weights
+        
         #weight = 2 * np.exp(-(err / Err_mean) ** 2) #use this to compute valid weight
         Err_mean = valid_errors.mean()
         # Calculate the weights based on the given formula
-        valid_weights = 2 * torch.exp(-(valid_errors / Err_mean) ** 2)
-        '''
+        valid_weights = 2 * torch.exp(-(valid_errors / Err_mean) ** 2)   
+        
         valid_x, valid_y = valid_coords[:, 0], valid_coords[:, 1]
         
         # Calculate weighted MSE
         depth_loss = torch.mean((depth[valid_y, valid_x] - gt[valid_y, valid_x]) ** 2 * valid_weights)
+        '''
+        #del valid_coords
+        #depth_loss = l2_loss(depth, gt)
+        #depth_loss = torch.mean((depth[valid_y, valid_x] - gt[valid_y, valid_x]) ** 2)
         #total_kl_divergence = kl_divergence_point_to_gaussian(depth[valid_y, valid_x], gt[valid_y, valid_x], valid_errors)
         #depth_loss = total_kl_divergence.mean()
     else:
         depth_loss = torch.tensor(0.0, device=depth.device)
-    torch.cuda.empty_cache()
+    
     return depth_loss
 
 
@@ -239,17 +222,6 @@ def training(
                 gt_image, viewpoint_cam,gt_depth,error = batch_data[batch_idx]
                 gt_image = gt_image.cuda()
                 viewpoint_cam = viewpoint_cam.cuda()
-                '''
-                if gt_depth is not None:
-                    gt_depth = gt_depth[0,:,:]
-                '''
-                if depth_lambda > 0 and gt_depth is not None:      
-                    if dense == True:
-                        gt_depth = gt_depth[0,:,:].unsqueeze(0)
-                        gt_depth = gt_depth.permute(0,2,1)
-                        gt_depth = gt_depth.cuda()   
-                    else:
-                        pass
 
                 # Render
                 render_pkg = render(viewpoint_cam, gaussians, pipe, background)
@@ -259,41 +231,40 @@ def training(
                     render_pkg["visibility_filter"],
                     render_pkg["radii"],
                 )
-                depth = render_pkg["depth"]
+                depth = render_pkg["depth"]        
                 alpha = render_pkg["alpha"]
 
                 # Loss
                 Ll1 = l1_loss(image, gt_image)
                 Lssim = 1.0 - ssim(image, gt_image)
                 loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * Lssim
+                
                 Ldepth = torch.tensor(0.0, device=gt_image.device)
                 
                 ####   depth loss    #####
                 if depth_lambda > 0 and gt_depth is not None:
-                    if dense:
+                    if dense == True:
+                        gt_depth = gt_depth[0,:,:].unsqueeze(0)
+                        gt_depth = gt_depth.permute(0,2,1)
+                        gt_depth = gt_depth.cuda()   
                         mask = gt_depth > 0
-                        # put depth = 0 where gt_depth = 0
                         depth = depth * mask
-                        depth = (depth-depth.min())/(depth.max()-depth.min())
-                        gt_depth = (gt_depth-gt_depth.min())/(gt_depth.max()-gt_depth.min())
+                        #Ldepth = l2_loss(depth, gt_depth)
+                        Ldepth = (depth-gt_depth).pow(2).sum() /mask.sum()
+                        loss = loss + depth_lambda*Ldepth
+                        with torch.no_grad():
+                            depth_list.append([iteration,0, Ldepth.cpu()])  
 
-                        current_depth_lambda = get_depth_lambda_exponential(iteration, depth_lambda, 0.01, opt.iterations)
-                        Ldepth = l1_loss(depth, gt_depth)
-                        Lssim_depth = 1.0 - ssim(depth,gt_depth)
-                        loss = loss + current_depth_lambda*(1.0-opt.lambda_dssim)*Ldepth + opt.lambda_dssim * Lssim_depth
                     else:
                         #get image id
                         image_id = gt_depth["id"]
-                        Ldepth = cal_depth_loss(depth, gt_depth)
+                        Ldepth = cal_depth_loss(depth, gt_depth,opt.lambda_dssim)
+                        print (f"Depth loss for image {image_id} is {Ldepth}")
                         with torch.no_grad():
-                            if Ldepth!=0:
-                                print("depth loss: ",Ldepth,"image_id: ",gt_depth["id"])
-                            # update loss at each iteration and update the image id(use tuple)
-                            #depth_list[iteration] = Ldepth
-                            #depth_list[iteration] = (image_id,Ldepth)
+                            depth_list.append([iteration, image_id, Ldepth.cpu()])  
+                        lambda_iter = get_expon_lr_func(depth_lambda, 0.01,max_steps=opt.iterations)(iteration)
+                        loss = loss + lambda_iter*Ldepth
 
-                            depth_list.append([iteration, image_id,Ldepth])  
-                        loss = loss + depth_lambda*Ldepth
                 ###### opa mask Loss ######
                 if opt.lambda_opa_mask > 0:
                     o = alpha.clamp(1e-6, 1 - 1e-6)
@@ -379,44 +350,28 @@ def training(
                     if not df.empty:
                         unique_image_ids = df["ID"].unique()
                         colors = plt.cm.get_cmap('tab20', len(unique_image_ids))  # 使用 'tab20' colormap，最多 20 种颜色
-                        fig, ax = plt.subplots()
+                        
                         for i, image_id in enumerate(unique_image_ids):
                             image_df = df[df["ID"] == image_id]
+                            
+                            # 创建一个新的图形
+                            fig, ax = plt.subplots()
+                            
                             ax.plot(image_df["Iteration"], image_df["Depth Loss"], marker='o', linestyle='-', 
                                     color=colors(i), label=f'ID {image_id}')
 
-                        ax.set_title('Depth Loss vs Iteration')
-                        ax.set_xlabel('Iteration')
-                        ax.set_ylabel('Depth Loss')
+                            ax.set_title(f'Depth Loss vs Iteration for ID {image_id}')
+                            ax.set_xlabel('Iteration')
+                            ax.set_ylabel('Depth Loss')
 
-                        # 设置图例字体大小，并将图例放在图外
-                        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize='small')
+                            # 设置图例
+                            ax.legend(loc='upper right')
 
-                        save_path = os.path.join(args.model_path, 'depth_list.png')
-                        plt.savefig(save_path, bbox_inches='tight')
-                        plt.close()
+                            # 保存每个 ID 对应的图形
+                            save_path = os.path.join(args.model_path, f'depth_list_id_{image_id}.png')
+                            plt.savefig(save_path, bbox_inches='tight')
+                            plt.close()
 
-                '''
-                    import matplotlib.pyplot as plt
-                    import pandas as pd
-
-                    df = pd.DataFrame(list(depth_list.items()), columns=["Iteration", "Depth Loss"])
-                    # use gpu to plot
-                    if df.empty:
-                        pass
-                    else:
-                        fig, ax = plt.subplots()
-                        ax.plot(df["Iteration"], df["Depth Loss"], marker='o', linestyle='-', color='b')
-
-                        # 设置标题和标签
-                        ax.set_title('Depth Loss vs Iteration')
-                        ax.set_xlabel('Iteration')
-                        ax.set_ylabel('Depth Loss')
-                        # 保存为 PNG 文件
-                        save_path = os.path.join(args.model_path, 'depth_list.png')
-                        plt.savefig(save_path, bbox_inches='tight')
-                        plt.close()
-                    '''
                 
             
             with torch.no_grad():
@@ -484,7 +439,7 @@ def training(
                         torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt_best.pth")
                         torch.cuda.empty_cache() 
 
-                if iteration in saving_iterations or iteration % 5000 ==0:
+                if iteration in saving_iterations or iteration % 10000 ==0:
                     print("\n[ITER {}] Saving Gaussians".format(iteration))
                     scene.save(iteration)
                     torch.cuda.empty_cache() 
@@ -632,7 +587,10 @@ def training_report(
                     render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
                     image = torch.clamp(render_pkg["render"], 0.0, 1.0)
 
-                    depth = easy_cmap(render_pkg["depth"][0])
+                    depth = normalize(render_pkg["depth"][0])
+                    depth = interpolate(depth)
+                    
+                    
                     alpha = torch.clamp(render_pkg["alpha"], 0.0, 1.0).repeat(3, 1, 1)
                     # reduce tensorboard write
                     if tb_writer and (idx < 5):

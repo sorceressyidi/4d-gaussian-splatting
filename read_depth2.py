@@ -534,13 +534,18 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, pcd=None, r
             valid_coords = []
 
             # 遍历所有有效的索引
+            
             for i in range(len(valid_idx)):
                 # 计算出整数化后的像素坐标
                 x = np.round(cam_coord[0, i]).astype(np.int32).clip(0, width // resolution - 1)
                 y = np.round(cam_coord[1, i]).astype(np.int32).clip(0, height // resolution - 1)
                 
                 # 获取有效的深度、权重和误差信息
-                valid_depths.append(pts_depths[0, i])
+                #valid_depths.append(pts_depths[0, i])
+                valid_depths.append(depthmap[y,x])
+                if depthmap[y,x]==0:
+                    print("ERROR!")
+
                 if pcd.errors is not None:
                     valid_weights.append(1 / pcd.errors[valid_idx[i]])
                     valid_errors.append(pcd.errors[valid_idx[i]])
@@ -561,7 +566,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, pcd=None, r
             target = depthmap.copy()
             #target = ((target != 0) * 255).astype(np.uint8)
             # output max min depth and total nonzero depth points
-            print(f"Max depth: {target.max()}, Min depth: {target.min()}, Nonzero: {np.count_nonzero(target)}")
+            print(f"Max depth: {target.max()}, Min depth: {target.min()}, Nonzero: {np.count_nonzero(target)},Mean depth:{np.sum(target)/np.count_nonzero(target)}")
             
             # get non_zero_indices  
             non_zero_indices = np.nonzero(target)
@@ -596,7 +601,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, pcd=None, r
             
             # 保存深度图和权重
             np.save(f"debug/{idx:03d}_depthmap.npy", depthmap)
-            
+            print(f"shape:{depthmap.shape}")
             np.save(f"debug/{idx:03d}_depth_weight.npy", depth_weight)
 
     sys.stdout.write('\n')
@@ -606,11 +611,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, pcd=None, r
     return
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--path", type=str)
-args = parser.parse_args()
-reading_dir = "images" 
-ply_path, cam_extrinsics, cam_intrinsics = refineColmapWithIndex(args.path)
-pcd = fetchPly(ply_path)
-cam_infos = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, 
-                                images_folder=os.path.join(args.path, reading_dir), pcd=pcd)
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--path", type=str)
+    args = parser.parse_args()
+    reading_dir = "images" 
+    ply_path, cam_extrinsics, cam_intrinsics = refineColmapWithIndex(args.path)
+    pcd = fetchPly(ply_path)
+    cam_infos = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, 
+                                    images_folder=os.path.join(args.path, reading_dir), pcd=pcd)

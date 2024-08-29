@@ -37,13 +37,6 @@ class GaussianModel:
             cov_11 = actual_covariance[:,:3,:3]
             cov_12 = actual_covariance[:,0:3,3:4]
             cov_t = actual_covariance[:,3:4,3:4]
-
-            '''
-            Note the whle matrix can be represented as:
-            cov11  (3x3)   cov12(3x1)
-            cov12.T(1x3)   cov_t (1)
-            '''
-            
             current_covariance = cov_11 - cov_12 @ cov_12.transpose(1, 2) / cov_t
             symm = strip_symmetric(current_covariance)
             if dt.shape[1] > 1:
@@ -67,7 +60,7 @@ class GaussianModel:
         self.rotation_activation = torch.nn.functional.normalize
 
 
-    def __init__(self, sh_degree : int, gaussian_dim : int = 3, time_duration: list = [-0.5, 0.5], rot_4d: bool = False, force_sh_3d: bool = False, sh_degree_t : int = 0):
+    def __init__(self, sh_degree : int, gaussian_dim : int = 4, time_duration: list = [-0.5, 0.5], rot_4d: bool = True, force_sh_3d: bool = False, sh_degree_t : int = 0):
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree  
         self._xyz = torch.empty(0)
@@ -264,8 +257,7 @@ class GaussianModel:
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
         features = torch.zeros((fused_color.shape[0], 3, self.get_max_sh_channels)).float().cuda()
         features[:, :3, 0 ] = fused_color
-        features[:, 3:, 1:] = 0.0 # seems useless
-
+        features[:, 3:, 1:] = 0.0
         if self.gaussian_dim == 4:
             if pcd.time is None:
                 fused_times = (torch.rand(fused_point_cloud.shape[0], 1, device="cuda") * 1.2 - 0.1) * (self.time_duration[1] - self.time_duration[0]) + self.time_duration[0]
@@ -286,7 +278,6 @@ class GaussianModel:
                 rots_r = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
                 rots_r[:, 0] = 1
 
-        
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
@@ -307,6 +298,8 @@ class GaussianModel:
         assert self.gaussian_dim == 4 and self.rot_4d
         self.spatial_lr_scale = spatial_lr_scale
         init_4d_gaussian = torch.load(path)
+        # print(init_4d_gaussian)
+        #breakpoint()
         fused_point_cloud = init_4d_gaussian['xyz'].cuda()
         features_dc = init_4d_gaussian['features_dc'].cuda()
         features_rest = init_4d_gaussian['features_rest'].cuda()
@@ -377,6 +370,39 @@ class GaussianModel:
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
+    def construct_list_of_attributes(self):
+        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+        # All channels except the 3 DC
+        for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
+            l.append('f_dc_{}'.format(i))
+        for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
+            l.append('f_rest_{}'.format(i))
+        l.append('opacity')
+        for i in range(self._scaling.shape[1]):
+            l.append('scale_{}'.format(i))
+        for i in range(self._rotation.shape[1]):
+            l.append('rot_{}'.format(i))
+        return l
+
+    def save_ply(self, path):
+        mkdir_p(os.path.dirname(path))
+
+        xyz = self._xyz.detach().cpu().numpy()
+        normals = np.zeros_like(xyz)
+        f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        opacities = self._opacity.detach().cpu().numpy()
+        scale = self._scaling.detach().cpu().numpy()
+        rotation = self._rotation.detach().cpu().numpy()
+
+        dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
+
+        elements = np.empty(xyz.shape[0], dtype=dtype_full)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        elements[:] = list(map(tuple, attributes))
+        el = PlyElement.describe(elements, 'vertex')
+        PlyData([el]).write(path)
+    
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:

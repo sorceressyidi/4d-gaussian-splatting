@@ -287,22 +287,9 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
                 if not extension_depth in frame["depth_path"]:
                     depth_name = frame["depth_path"] + extension_depth
                 depth_path = os.path.join(path, depth_name)
-                '''
-                depth saved in this way:
-                save_path = os.path.join(depth_output_path, fname.replace('.png.geometric.bin', '.npy'))
-                np.save(save_path, depth_image)
-                '''
                 # load npy
                 depth = np.load(depth_path,allow_pickle=True)
-                if 're_err' in frame:
-                    image_id = frame["re_err"]
-                    with open(os.path.join(path, "reprojection_errors.json")) as f:
-                        reprojection_errors = json.load(f)
-                    for image_errors in reprojection_errors:
-                        if image_errors['image_id'] == image_id:
-                            error = image_errors
-                else:
-                    error = None
+                error = None
             else:
                 depth = None
                 error = None

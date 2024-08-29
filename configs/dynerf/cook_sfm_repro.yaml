@@ -6,14 +6,14 @@ rot_4d: True
 force_sh_3d: False
 batch_size: 4
 exhaust_test: True
-start_checkpoint: "output/N3V/cook_sfm_repro2/chkpnt_best.pth"
-depth_lambda: 0.2
+start_checkpoint: "output/N3V/cook_sfm_10/chkpnt_best.pth"
+depth_lambda: 10
 dense : False
 
 ModelParams:
-  sh_degree: 3
+  sh_degree: 1
   source_path: "data/N3V/cook_spinach"
-  model_path: "output/N3V/cook_sfm_repro2"
+  model_path: "output/N3V/cook_sfm_10"
   images: "images"
   resolution: 2
   white_background: False
