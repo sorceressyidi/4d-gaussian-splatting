@@ -54,30 +54,25 @@ def cal_depth_loss(depth, gt_depth,lambda_dssim=0.85):
     torch.Tensor: Calculated depth loss.
     """
     with torch.no_grad():
-        #errors = gt_depth['error']
         coords = gt_depth['coord']
-        #weights = gt_depth['weight']
-        coords = [(int(coord[0] ), int(coord[1] )) for coord in coords]
-        GT = gt_depth['depth']
-        
+        downsample = 2
+        coords = [(int(coord[0] / downsample), int(coord[1] / downsample)) for coord in coords]
+        GT = gt_depth['colmap']
         height, width = depth.shape[1], depth.shape[2]
         gt = torch.zeros(height, width, dtype=torch.float32)
-        valid_coords = []
 
         for i, coord in enumerate(coords):
                 x, y = int(coord[0]), int(coord[1])
                 if 0 <= x < width and 0 <= y < height:
                     gt[y, x] = GT[i]
-                    valid_coords.append((x, y))
-                
+
     del GT
-    if len(valid_coords) > 100:
+    if len(coords) > 100:
         gt = gt.unsqueeze(0)
         gt = gt.to(depth.device)
         #gt = torch.clamp(gt, 0.1, 100)
-        mask = gt > 0
-        mask = mask.to(depth.device).detach()
-        #depth = depth * mask      
+        mask = gt != 0
+        mask = mask.to(depth.device).detach()   
         depth_loss = l1_loss_masked(depth, gt, mask)
         '''
         valid_coords = torch.tensor(valid_coords, device=depth.device)  
@@ -242,19 +237,20 @@ def training(
                 ####   depth loss    #####
                 if depth_lambda > 0 and gt_depth is not None:
                     if dense == True:
-                        gt_depth = gt_depth[0,:,:].unsqueeze(0)
-                        gt_depth = gt_depth.permute(0,2,1)
-                        gt_depth = gt_depth.cuda()   
-                        mask = gt_depth > 0
-                        depth = depth * mask
-                        #Ldepth = l2_loss(depth, gt_depth)
-                        Ldepth = (depth-gt_depth).pow(2).sum() /mask.sum()
-                        loss = loss + depth_lambda*Ldepth
+                        #gt to tensor
+                        gt_depth = torch.tensor(gt_depth, device=gt_image.device)
+                        gt_depth = gt_depth.unsqueeze(0)
+                        gt_depth = torch.clamp(gt_depth, 0.1, 100)
+                        Ldepth = l1_loss(depth, gt_depth)
+                        lambda_iter = get_expon_lr_func(depth_lambda, 1,max_steps=opt.iterations)(iteration)
+                        loss = loss + lambda_iter*Ldepth
                         with torch.no_grad():
-                            depth_list.append([iteration,0, Ldepth.cpu()])  
+                            depth_list.append([iteration,0, Ldepth.cpu()])
+                        print(f"Depth loss is {Ldepth}")  
 
                     else:
                         #get image id
+                        gt_depth = gt_depth.item() 
                         image_id = gt_depth["id"]
                         Ldepth = cal_depth_loss(depth, gt_depth,opt.lambda_dssim)
                         print (f"Depth loss for image {image_id} is {Ldepth}")

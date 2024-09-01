@@ -57,7 +57,7 @@ def loadCam(args, id, cam_info, resolution_scale,dense=True):
     if cam_info.depth is not None:
         #depth = PILtoTorch(cam_info.depth, resolution) * 255 / 10000
         if dense == True:
-            depth = PILtoTorch(cam_info.depth,resolution,depth=True)
+            depth = cam_info.depth
         else:
             depth = cam_info.depth
         if cam_info.error is not None:

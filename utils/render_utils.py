@@ -174,7 +174,6 @@ def generate_ellipse_path(poses: np.ndarray,
 def generate_path(viewpoint_cameras, n_frames=480):
   viewpoint_cameras = [viewpoint_cameras[i] for i in range(0, len(viewpoint_cameras), 300)]
   
-  # import pdbr; breakpoint()
   c2ws = np.array([np.linalg.inv(np.asarray((cam[1].world_view_transform.T).cpu().numpy())) for cam in viewpoint_cameras])
   pose = c2ws[:,:3,:] @ np.diag([1, -1, -1, 1])
   pose_recenter, colmap_to_world_transform = transform_poses_pca(pose)
@@ -193,7 +192,7 @@ def generate_path(viewpoint_cameras, n_frames=480):
       cam.world_view_transform = torch.from_numpy(np.linalg.inv(c2w).T).float().cuda()
       cam.full_proj_transform = (cam.world_view_transform.unsqueeze(0).bmm(cam.projection_matrix.cuda().unsqueeze(0))).squeeze(0)
       cam.camera_center = cam.world_view_transform.inverse()[3, :3]
-      # if i!=0:
+      
       cam.timestamp = 10.0/n_frames*i
       print(f"timestamp: {cam.timestamp}")
       traj.append((None, cam))

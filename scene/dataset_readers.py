@@ -281,18 +281,43 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
         
         # Note here for depth supervision
         if dense == True:
-            if 'depth_path' in frame:
-                depth_name = frame["depth_path"]
-                extension_depth = ".npy"
-                if not extension_depth in frame["depth_path"]:
-                    depth_name = frame["depth_path"] + extension_depth
-                depth_path = os.path.join(path, depth_name)
-                # load npy
-                depth = np.load(depth_path,allow_pickle=True)
-                error = None
+            suffix = "_0000"
+            prefix = "cam"
+            file_path = frame['file_path']
+            if file_path.endswith(suffix):
+                start_index = file_path.find(prefix) + len(prefix)
+                end_index = file_path.find('_', start_index)
+                number = file_path[start_index:end_index]
+                if number[0] == '0':
+                    number = number[1:]
+                number = int(number)-1
+                if number in range(0, 20):
+                    import cv2
+                    depth_dir = "cam" + str(number)
+                    depth_name = "cam" + str(number) + ".png"
+                    error = None
+                    depth_path = os.path.join(path,'depths',depth_dir,depth_name)
+                    invdepthmap = cv2.imread(depth_path, -1).astype(np.float32) / float(2**16)
+                    
+                    with open(os.path.join(path,'depths','depth_params.json')) as json_file:
+                        depth_params = json.load(json_file)
+                    param_name = "cam" + str(number) +"/" + "cam" + str(number)
+                    depth_params = depth_params[param_name]
+                    invdepthmap = invdepthmap * depth_params["scale"] + depth_params["offset"]
+                    invdepthmap = 1.0 / invdepthmap
+                    invdepthmap = invdepthmap[...,0]
+                    
+                    invdepthmap = cv2.resize(invdepthmap, (int(width/2),int(height/2)))
+                    print(f"shape of invdepthmap: {invdepthmap.shape}")
+                    invdepthmap[invdepthmap < 0] = 0
+                    depth = invdepthmap
+                    error = None
+                else:
+                    error = None
+                    depth = None
             else:
-                depth = None
                 error = None
+                depth = None
         else:
             suffix = "_0000"
             prefix = "cam"
@@ -301,11 +326,24 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
                 start_index = file_path.find(prefix) + len(prefix)
                 end_index = file_path.find('_', start_index)
                 number = file_path[start_index:end_index]
-                idx = int(number)
-                error = None
-                depth_dir = os.path.join(path,"colmap_depth.npy")
-                depth = np.load(depth_dir,allow_pickle=True)
-                depth = depth[idx-1]
+                if number[0] == '0':
+                    number = number[1:]
+                number = int(number)-1
+
+                if number in range(0, 20):
+                    import cv2
+                    
+                    depth_name = "cam" + str(number) + ".npy"
+                    depth_dir = os.path.join(path,"colmap",depth_name)
+                    depth = np.load(depth_dir,allow_pickle=True)
+                    print(f"Loading depth map from {depth_dir}")
+                    error = None
+                    
+
+                    
+                else:
+                    error = None
+                    depth = None
             else:
                 error = None
                 depth = None

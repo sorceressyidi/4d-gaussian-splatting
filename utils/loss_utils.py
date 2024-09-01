@@ -19,16 +19,9 @@ def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
 
 def l1_loss_masked(network_output, gt, mask):
-    masked_network_output = network_output[mask > 0]
-    masked_gt = gt[mask > 0]
-    masked_loss = torch.abs(masked_network_output - masked_gt).mean()
-    return mean_loss
+    loss = torch.abs((network_output - gt)*mask).mean()
+    return loss
 
-def l1_loss_masked(network_output, gt, mask):
-    masked_loss = torch.abs(network_output - gt) * mask
-    mean_loss = masked_loss.sum() / mask.sum()
-    return mean_loss
-   
 def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()
 
