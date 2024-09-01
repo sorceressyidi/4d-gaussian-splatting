@@ -76,11 +76,9 @@ def cal_depth_loss(depth, gt_depth,lambda_dssim=0.85):
         gt = gt.to(depth.device)
         #gt = torch.clamp(gt, 0.1, 100)
         mask = gt > 0
-        mask = mask.to(depth.device)
+        mask = mask.to(depth.device).detach()
         #depth = depth * mask      
         depth_loss = l1_loss_masked(depth, gt, mask)
-       
-
         '''
         valid_coords = torch.tensor(valid_coords, device=depth.device)  
         
@@ -262,7 +260,7 @@ def training(
                         print (f"Depth loss for image {image_id} is {Ldepth}")
                         with torch.no_grad():
                             depth_list.append([iteration, image_id, Ldepth.cpu()])  
-                        lambda_iter = get_expon_lr_func(depth_lambda, 0.01,max_steps=opt.iterations)(iteration)
+                        lambda_iter = get_expon_lr_func(depth_lambda, 1,max_steps=opt.iterations)(iteration)
                         loss = loss + lambda_iter*Ldepth
 
                 ###### opa mask Loss ######

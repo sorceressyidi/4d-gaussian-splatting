@@ -195,7 +195,7 @@ def generate_path(viewpoint_cameras, n_frames=480):
       cam.camera_center = cam.world_view_transform.inverse()[3, :3]
       # if i!=0:
       cam.timestamp = 10.0/n_frames*i
-      print(cam.timestamp)
+      print(f"timestamp: {cam.timestamp}")
       traj.append((None, cam))
 
   return traj
@@ -271,12 +271,11 @@ def create_videos(base_dir, input_dir, out_name, num_frames=480):
         # ???
         if k in ['color', 'normal','flow']:
           img = img / 255.
-        '''
         elif k.startswith('depth'):
           img = render_dist_curve_fn(img)
           img = np.clip((img - np.minimum(lo, hi)) / np.abs(hi - lo), 0, 1)
           img = cm.get_cmap('turbo')(img)[..., :3]
-        '''
+
         frame = (np.clip(np.nan_to_num(img), 0., 1.) * 255.).astype(np.uint8)
         writer.add_image(frame)
         idx += 1

@@ -519,7 +519,9 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, pcd=None, r
             cam_coord = cam_coord[:2, valid_idx] / cam_coord[-1:, valid_idx]
             depthmap[np.round(cam_coord[1]).astype(np.int32).clip(0, height // resolution - 1),
                      np.round(cam_coord[0]).astype(np.int32).clip(0, width // resolution - 1)] = pts_depths
-                     
+            znear = 0.1
+            zfar = 100.0
+            depthmap = torch.clamp(depthmap, znear, zfar)
             depth_weight[np.round(cam_coord[1]).astype(np.int32).clip(0, height // resolution - 1),
                          np.round(cam_coord[0]).astype(np.int32).clip(0, width // resolution - 1)] = 1 / pcd.errors[valid_idx] if pcd.errors is not None else 1
             #depth_weight = depth_weight / depth_weight.max()
@@ -527,6 +529,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, pcd=None, r
             depth_error[np.round(cam_coord[1]).astype(np.int32).clip(0, height // resolution - 1),
                         np.round(cam_coord[0]).astype(np.int32).clip(0, width // resolution - 1)] = pcd.errors[valid_idx] if pcd.errors is not None else 0
 
+            depthmap = 1.0 / depthmap
             # 初始化用于存储有效信息的列表
             valid_depths = []
             valid_weights = []
@@ -568,41 +571,30 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, pcd=None, r
             # output max min depth and total nonzero depth points
             print(f"Max depth: {target.max()}, Min depth: {target.min()}, Nonzero: {np.count_nonzero(target)},Mean depth:{np.sum(target)/np.count_nonzero(target)}")
             
-            # get non_zero_indices  
-            non_zero_indices = np.nonzero(target)
-            # Enlarging the points for better visualization
-            plt.figure(figsize=(12, 8))
-            plt.imshow(depthmap, cmap='viridis', interpolation='nearest')
-            plt.colorbar(label='Depth Value')
-            plt.title('Depth Map Visualization')
-            plt.xlabel('Width')
-            plt.ylabel('Height')
-            #print(f"Non-zero indices: {non_zero_indices}")
-            # Highlight non-zero points more clearly
-            for index in non_zero_indices:
-                y, x = divmod(index, width // resolution-1)
-                plt.plot(x, y, 'ro', markersize=10)
-            
-            # Save the enhanced visualization
-            output_path_enhanced = '/mnt/data/depth_map_visualization_enhanced.png'
-            plt.savefig(output_path_enhanced)
-            plt.show()
 
-            from matplotlib.colors import LinearSegmentedColormap
-            cmap = LinearSegmentedColormap.from_list('black_white', [(1, 1, 1), (0, 0, 0)], N=256)
+            # Normalize the depth image to the range [0, 255]
+            min_depth = depthmap[np.isfinite(depthmap)].min()
+            max_depth = depthmap[np.isfinite(depthmap)].max()
+            print(f"Min depth: {min_depth}, Max depth: {max_depth}")
+            if min_depth != max_depth:
+                depthmap = (depthmap - min_depth) / (max_depth - min_depth) * 255
+            else:
+                depthmap.fill(0)
+            depthmap = depthmap.astype(np.uint8)
 
-            # 可视化深度图
-            plt.imshow(depthmap, cmap=cmap)
-            plt.colorbar()
-            plt.title(f"Depth Map {idx:03d}")
-            
-            plt.savefig(f"debug/{idx:03d}_depth.png")
+            depth_image_pil = Image.fromarray(depthmap, mode='L')
+            depth_image_path = os.path.join("debug", f'depth_{key:04d}.png')
+            depth_image_pil.save(depth_image_path)
+            print(f"Depth image saved to {depth_image_path}")
+                
+            # Optionally use matplotlib to visualize and save
+            plt.imshow(depth_image, cmap='gray')
+            plt.axis('off')
+            plt.savefig(depth_image_path, bbox_inches='tight', pad_inches=0, dpi=300)
             plt.close()
-            
-            # 保存深度图和权重
-            np.save(f"debug/{idx:03d}_depthmap.npy", depthmap)
-            print(f"shape:{depthmap.shape}")
-            np.save(f"debug/{idx:03d}_depth_weight.npy", depth_weight)
+
+
+
 
     sys.stdout.write('\n')
     save_path = os.path.join("debug", "depth_data.npy")    

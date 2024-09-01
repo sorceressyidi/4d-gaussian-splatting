@@ -79,13 +79,19 @@ class Scene:
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
             
         if args.loaded_pth:
-            self.gaussians.create_from_pth(args.loaded_pth, self.cameras_extent)
+            # self.gaussians.create_from_pth(args.loaded_pth, self.cameras_extent)
+            (model_params, first_iter) = torch.load(args.loaded_pth)
+            gaussians.restore(model_params, None)
         else:
             if self.loaded_iter:
-                self.gaussians.load_ply(os.path.join(self.model_path,
+                # self.gaussians.load_ply(os.path.join(self.model_path,
+                #                                             "point_cloud",
+                #                                             # "iteration_" + str(self.loaded_iter),
+                #                                             "input.ply"))
+                self.gaussians.create_from_pth(os.path.join(self.model_path,
                                                             "point_cloud",
-                                                            "iteration_" + str(self.loaded_iter),
-                                                            "point_cloud.ply"))
+                                                            # "iteration_" + str(self.loaded_iter),
+                                                            "chkpnt_30000.pth"),0.1)
             else:
                 self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
 
